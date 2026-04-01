@@ -7,15 +7,17 @@ import logging
 from typing import Any, Mapping
 
 from .civitai import verify_api_key
+from .scanner import get_scan_status, start_scan_job
 from .settings import load_settings, redact_settings, save_settings
 
 LOGGER = logging.getLogger(__name__)
 
 try:
-    from aiohttp import web  # type: ignore
+    from aiohttp import ClientSession, web  # type: ignore
 
     HAS_AIOHTTP = True
 except ImportError:
+    ClientSession = None  # type: ignore[assignment]
     web = None  # type: ignore[assignment]
     HAS_AIOHTTP = False
 
@@ -90,6 +92,9 @@ def register_routes(routes: Any) -> None:
 
     routes.get("/comfyg-models/api/settings")(get_settings_handler)
     routes.put("/comfyg-models/api/settings")(put_settings_handler)
+    routes.post("/comfyg-models/api/scan")(post_scan_handler)
+    routes.get("/comfyg-models/api/scan/status")(get_scan_status_handler)
+    routes.get("/comfyg-models/api/civitai/{path:.*}")(civitai_proxy_handler)
     LOGGER.info("Registered settings API routes")
 
 
@@ -124,3 +129,47 @@ async def put_settings_handler(request: Any) -> Any:
         return _json_response(error_payload("Internal server error", "INTERNAL_ERROR"), status=500)
 
     return _json_response(result)
+
+
+async def post_scan_handler(_request: Any) -> Any:
+    """Handle POST /comfyg-models/api/scan."""
+    try:
+        started = await start_scan_job()
+    except Exception:
+        LOGGER.exception("Unexpected failure while starting a scan job")
+        return _json_response(error_payload("Failed to start scan", "SCAN_START_ERROR"), status=500)
+
+    if not started:
+        return _json_response({"status": "already_running"})
+
+    return _json_response({"status": "started"})
+
+
+async def get_scan_status_handler(_request: Any) -> Any:
+    """Handle GET /comfyg-models/api/scan/status."""
+    return _json_response(get_scan_status())
+
+
+async def civitai_proxy_handler(request: Any) -> Any:
+    """Handle GET /comfyg-models/api/civitai/{path:.*}."""
+    if not HAS_AIOHTTP or web is None or ClientSession is None:
+        return _json_response(error_payload("aiohttp is unavailable", "AIOHTTP_UNAVAILABLE"), status=500)
+
+    path = request.match_info["path"]
+    settings = load_settings()
+    api_key = settings.get("civitai_api_key")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = f"https://civitai.com/api/v1/{path}"
+    LOGGER.debug("Proxying CivitAI request to %s", path)
+
+    try:
+        async with ClientSession() as session:
+            async with session.get(url, headers=headers, params=request.rel_url.query) as response:
+                payload = await response.json(content_type=None)
+                return web.json_response(payload, status=response.status)
+    except Exception:
+        LOGGER.exception("CivitAI proxy request failed for %s", path)
+        return _json_response(error_payload("Failed to reach CivitAI", "CIVITAI_PROXY_ERROR"), status=502)

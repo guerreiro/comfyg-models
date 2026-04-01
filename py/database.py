@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Sequence
 
@@ -169,3 +170,97 @@ async def executemany(query: str, rows: Iterable[Sequence[Any]]) -> None:
     async with connection_context() as connection:
         await connection.executemany(query, list(rows))
         await connection.commit()
+
+
+async def upsert_models(models: list[dict[str, Any]]) -> None:
+    """Insert or update scanned models without overwriting enriched metadata."""
+    if not models:
+        LOGGER.debug("No scanned models to persist")
+        return
+
+    rows = [
+        (
+            model["id"],
+            model["filename"],
+            model["directory"],
+            model["type"],
+            model["file_size"],
+        )
+        for model in models
+    ]
+
+    query = """
+    INSERT INTO models (id, filename, directory, type, file_size)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        filename = excluded.filename,
+        directory = excluded.directory,
+        type = excluded.type,
+        file_size = excluded.file_size
+    """
+
+    LOGGER.info("Persisting %s scanned models into SQLite", len(rows))
+    await executemany(query, rows)
+
+
+async def list_models_missing_hashes() -> list[dict[str, Any]]:
+    """Return models that still need hashing."""
+    query = """
+    SELECT id, filename, directory, type, file_size
+    FROM models
+    WHERE sha256 IS NULL
+    ORDER BY created_at ASC, filename ASC
+    """
+    return await fetch_all(query)
+
+
+async def update_model_hashes(model_id: str, sha256: str | None, blake3: str | None) -> None:
+    """Persist computed hashes for a model."""
+    query = """
+    UPDATE models
+    SET sha256 = ?,
+        blake3 = ?,
+        last_hash_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """
+    await execute(query, (sha256, blake3, model_id))
+
+
+async def list_models_pending_civitai_sync() -> list[dict[str, Any]]:
+    """Return models that can be looked up on CivitAI."""
+    query = """
+    SELECT id, filename, directory, sha256, blake3, civitai_model_id, last_civitai_sync
+    FROM models
+    WHERE (blake3 IS NOT NULL OR sha256 IS NOT NULL)
+      AND (
+        civitai_model_id IS NULL
+        OR (
+          civitai_model_id = -1
+          AND (
+            last_civitai_sync IS NULL
+            OR datetime(last_civitai_sync) <= datetime('now', '-24 hours')
+          )
+        )
+      )
+    ORDER BY created_at ASC, filename ASC
+    """
+    return await fetch_all(query)
+
+
+async def update_model_civitai_match(
+    model_id: str,
+    civitai_model_id: int,
+    civitai_version_id: int | None,
+    civitai_data: dict[str, Any] | None,
+) -> None:
+    """Persist a successful or negative CivitAI match result."""
+    query = """
+    UPDATE models
+    SET civitai_model_id = ?,
+        civitai_version_id = ?,
+        civitai_data = ?,
+        last_civitai_sync = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """
+    serialized = json.dumps(civitai_data, ensure_ascii=True) if civitai_data is not None else None
+    await execute(query, (civitai_model_id, civitai_version_id, serialized, model_id))

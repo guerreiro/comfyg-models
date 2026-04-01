@@ -17,21 +17,29 @@ except ImportError:
     HAS_BLAKE3 = False
 
 CHUNK_SIZE = 8 * 1024 * 1024
+_BLAKE3_AUTO_THREADS = getattr(_blake3, "AUTO", None) if _blake3 is not None else None
 
 
 def hash_file(path: Path) -> dict[str, str | None]:
-    """Calculate SHA256 and Blake3 hashes for a file when available."""
+    """Calculate the preferred hash for a file, falling back to SHA256 when needed."""
     LOGGER.debug("Hashing file %s", path)
     result: dict[str, str | None] = {"sha256": None, "blake3": None}
 
     if HAS_BLAKE3 and _blake3 is not None:
         try:
-            blake_hasher = _blake3.blake3(max_threads=_blake3.AUTO)
+            if _BLAKE3_AUTO_THREADS is not None:
+                blake_hasher = _blake3.blake3(max_threads=_BLAKE3_AUTO_THREADS)
+            else:
+                blake_hasher = _blake3.blake3()
             blake_hasher.update_mmap(str(path))
             result["blake3"] = blake_hasher.hexdigest()
             LOGGER.debug("Computed Blake3 hash for %s", path)
+            return result
         except OSError:
-            LOGGER.exception("Failed to compute Blake3 hash for %s", path)
+            LOGGER.exception("Failed to compute Blake3 hash for %s; falling back to SHA256", path)
+
+    if HAS_BLAKE3:
+        LOGGER.debug("Blake3 unavailable for %s result; using SHA256 fallback", path)
 
     sha256 = hashlib.sha256()
     with path.open("rb") as handle:

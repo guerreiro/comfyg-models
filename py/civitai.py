@@ -150,11 +150,11 @@ async def verify_api_key(api_key: str) -> tuple[bool, str | None, str | None]:
     return True, username, None
 
 
-async def lookup_by_hash(hash_value: str, algorithm: str) -> dict[str, Any] | None:
+async def lookup_by_hash(hash_value: str, algorithm: str, api_key: str | None = None) -> dict[str, Any] | None:
     """Look up a model version by hash."""
     LOGGER.debug("Looking up CivitAI model by %s hash", algorithm)
     try:
-        payload = await _request_json(f"/model-versions/by-hash/{hash_value}")
+        payload = await _request_json(f"/model-versions/by-hash/{hash_value}", api_key=api_key)
     except CivitaiHttpError as exc:
         if exc.status == 404:
             LOGGER.info("CivitAI lookup returned 404 for %s hash", algorithm)

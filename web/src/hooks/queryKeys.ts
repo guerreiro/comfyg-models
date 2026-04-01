@@ -3,4 +3,5 @@ export const queryKeys = {
   models: ["models"] as const,
   modelDetail: (modelId: string) => ["models", modelId] as const,
   scanStatus: ["scan-status"] as const,
+  scanStart: ["scan-start"] as const,
 };
