@@ -26,9 +26,39 @@ export interface Model {
   last_used_at: string | null;
   use_count: number;
   created_at: string;
+  primary_user_image?: string | null;
   note?: string | null;
   tags?: string[];
   rating?: number | null;
+}
+
+export interface ModelUserImage {
+  id: number;
+  filename: string;
+  caption: string | null;
+  prompt: string | null;
+  negative_prompt: string | null;
+  created_at: string;
+}
+
+export interface ModelPrompt {
+  id: number;
+  title: string | null;
+  prompt: string;
+  negative_prompt: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface ModelPreview {
+  url: string;
+  local_filename: string | null;
+}
+
+export interface ModelDetail extends Model {
+  user_images: ModelUserImage[];
+  prompts: ModelPrompt[];
+  civitai_previews: ModelPreview[];
 }
 
 export interface ModelFilters {

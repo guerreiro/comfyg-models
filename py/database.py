@@ -264,3 +264,188 @@ async def update_model_civitai_match(
     """
     serialized = json.dumps(civitai_data, ensure_ascii=True) if civitai_data is not None else None
     await execute(query, (civitai_model_id, civitai_version_id, serialized, model_id))
+
+
+def _build_models_where_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    types = filters.get("type") or []
+    if types:
+        placeholders = ", ".join("?" for _ in types)
+        clauses.append(f"m.type IN ({placeholders})")
+        params.extend(types)
+
+    tags = filters.get("tags") or []
+    if tags:
+        placeholders = ", ".join("?" for _ in tags)
+        clauses.append(
+            f"""
+            EXISTS (
+                SELECT 1 FROM model_tags tag_filter
+                WHERE tag_filter.model_id = m.id
+                  AND tag_filter.tag IN ({placeholders})
+            )
+            """
+        )
+        params.extend(tags)
+
+    search = filters.get("search")
+    if search:
+        clauses.append("LOWER(m.filename) LIKE ?")
+        params.append(f"%{str(search).lower()}%")
+
+    base_models = filters.get("base_model") or []
+    if base_models:
+        base_clauses: list[str] = []
+        for base_model in base_models:
+            base_clauses.append("LOWER(json_extract(m.civitai_data, '$.baseModel')) = ?")
+            base_clauses.append("LOWER(json_extract(m.civitai_data, '$.model.baseModel')) = ?")
+            base_clauses.append("LOWER(json_extract(m.civitai_data, '$.modelVersion.baseModel')) = ?")
+            params.extend([str(base_model).lower(), str(base_model).lower(), str(base_model).lower()])
+        clauses.append(f"({' OR '.join(base_clauses)})")
+
+    if not clauses:
+        return "", params
+
+    return "WHERE " + " AND ".join(clauses), params
+
+
+def _models_order_by(sort: str | None, sort_dir: str | None) -> str:
+    sort_key = sort or "name"
+    direction = "DESC" if (sort_dir or "asc").lower() == "desc" else "ASC"
+    mapping = {
+        "name": "m.filename",
+        "date": "m.created_at",
+        "size": "m.file_size",
+        "civitai_rating": "json_extract(m.civitai_data, '$.stats.rating')",
+        "last_used": "m.last_used_at",
+    }
+    field = mapping.get(sort_key, "m.filename")
+    return f"ORDER BY {field} {direction}, m.filename ASC"
+
+
+def _parse_model_row(row: dict[str, Any]) -> dict[str, Any]:
+    parsed = dict(row)
+    civitai_data = parsed.get("civitai_data")
+    tags = parsed.get("tags")
+    parsed["civitai_data"] = json.loads(civitai_data) if isinstance(civitai_data, str) and civitai_data else None
+    parsed["tags"] = json.loads(tags) if isinstance(tags, str) and tags else []
+    return parsed
+
+
+async def list_models(filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return models enriched with note, tags, and rating."""
+    filters = filters or {}
+    where_clause, params = _build_models_where_clause(filters)
+    order_clause = _models_order_by(filters.get("sort"), filters.get("sort_dir"))
+
+    query = f"""
+    SELECT
+        m.id,
+        m.filename,
+        m.directory,
+        m.type,
+        m.file_size,
+        m.sha256,
+        m.blake3,
+        m.civitai_model_id,
+        m.civitai_version_id,
+        m.civitai_data,
+        m.last_hash_at,
+        m.last_civitai_sync,
+        m.last_used_at,
+        m.use_count,
+        m.created_at,
+        (
+            SELECT img.filename
+            FROM model_user_images img
+            WHERE img.model_id = m.id
+            ORDER BY img.created_at DESC, img.id DESC
+            LIMIT 1
+        ) AS primary_user_image,
+        note.note AS note,
+        rating.rating AS rating,
+        COALESCE(json_group_array(DISTINCT tags.tag) FILTER (WHERE tags.tag IS NOT NULL), '[]') AS tags
+    FROM models m
+    LEFT JOIN model_notes note ON note.model_id = m.id
+    LEFT JOIN model_ratings rating ON rating.model_id = m.id
+    LEFT JOIN model_tags tags ON tags.model_id = m.id
+    {where_clause}
+    GROUP BY m.id, note.note, rating.rating
+    {order_clause}
+    """
+
+    rows = await fetch_all(query, params)
+    return [_parse_model_row(row) for row in rows]
+
+
+async def get_model_detail(model_id: str) -> dict[str, Any] | None:
+    """Return a single model with related entities."""
+    query = """
+    SELECT
+        m.id,
+        m.filename,
+        m.directory,
+        m.type,
+        m.file_size,
+        m.sha256,
+        m.blake3,
+        m.civitai_model_id,
+        m.civitai_version_id,
+        m.civitai_data,
+        m.last_hash_at,
+        m.last_civitai_sync,
+        m.last_used_at,
+        m.use_count,
+        m.created_at,
+        (
+            SELECT img.filename
+            FROM model_user_images img
+            WHERE img.model_id = m.id
+            ORDER BY img.created_at DESC, img.id DESC
+            LIMIT 1
+        ) AS primary_user_image,
+        note.note AS note,
+        rating.rating AS rating,
+        COALESCE(json_group_array(DISTINCT tags.tag) FILTER (WHERE tags.tag IS NOT NULL), '[]') AS tags
+    FROM models m
+    LEFT JOIN model_notes note ON note.model_id = m.id
+    LEFT JOIN model_ratings rating ON rating.model_id = m.id
+    LEFT JOIN model_tags tags ON tags.model_id = m.id
+    WHERE m.id = ?
+    GROUP BY m.id, note.note, rating.rating
+    """
+    row = await fetch_one(query, (model_id,))
+    if row is None:
+        return None
+
+    detail = _parse_model_row(row)
+    detail["user_images"] = await fetch_all(
+        "SELECT id, filename, caption, prompt, negative_prompt, created_at FROM model_user_images WHERE model_id = ? ORDER BY created_at DESC",
+        (model_id,),
+    )
+    detail["prompts"] = await fetch_all(
+        "SELECT id, title, prompt, negative_prompt, notes, created_at FROM model_prompts WHERE model_id = ? ORDER BY created_at DESC",
+        (model_id,),
+    )
+    detail["civitai_previews"] = await fetch_all(
+        "SELECT url, local_filename FROM civitai_previews WHERE model_id = ? ORDER BY url ASC",
+        (model_id,),
+    )
+    return detail
+
+
+async def insert_model_user_image(
+    model_id: str,
+    filename: str,
+    caption: str | None,
+    prompt: str | None,
+    negative_prompt: str | None,
+) -> None:
+    """Persist a user-provided image reference for a model."""
+    query = """
+    INSERT INTO model_user_images (model_id, filename, caption, prompt, negative_prompt)
+    VALUES (?, ?, ?, ?, ?)
+    """
+    await execute(query, (model_id, filename, caption, prompt, negative_prompt))

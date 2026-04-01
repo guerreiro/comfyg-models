@@ -46,8 +46,18 @@ export interface CivitaiModelVersion {
 
 export interface CivitaiModelData {
   id: number;
+  modelId?: number;
   name: string;
   type?: string;
+  baseModel?: string;
+  images?: CivitaiModelImage[];
+  model?: {
+    baseModel?: string;
+  };
+  modelVersion?: {
+    baseModel?: string;
+    images?: CivitaiModelImage[];
+  };
   description?: string;
   stats?: CivitaiModelStats;
   modelVersions?: CivitaiModelVersion[];

@@ -4,11 +4,13 @@ import { queryKeys } from "./queryKeys";
 export interface SettingsResponse {
   civitai_api_key_configured: boolean;
   preview_cache_enabled: boolean;
+  show_nsfw_previews: boolean;
 }
 
 export interface SaveSettingsInput {
   civitai_api_key?: string;
   preview_cache_enabled: boolean;
+  show_nsfw_previews: boolean;
 }
 
 export interface SaveSettingsResponse {
