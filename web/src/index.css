@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+:root {
+  color: #1f160f;
+  background-color: #f2e5d4;
+  font-family:
+    "SF Pro Display",
+    "Segoe UI",
+    sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+}
+
+code {
+  font-family:
+    "SF Mono",
+    "JetBrains Mono",
+    monospace;
+}

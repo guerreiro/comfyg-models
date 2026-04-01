@@ -1,0 +1,47 @@
+__pycache__/
+*.py[cod]
+.Python
+.DS_Store
+*.swp
+*.swo
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.venv/
+venv/
+env/
+
+web/node_modules/
+web/.vite/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+*.log
+.vite/
+
+# Editors and workspace metadata
+.idea/
+.vscode/
+
+# AI agent local artifacts
+.agents/
+.codex/
+.cursor/
+.windsurf/
+.roo/
+.cline/
+CLAUDE.local.md
+CLAUDE.md
+GEMINI.md
+COPILOT.md
+AGENT.md
+AGENTS.local.md
+
+# Local runtime leftovers if they are accidentally created inside the repo
+settings.json
+cache.db
+previews/
+user-images/

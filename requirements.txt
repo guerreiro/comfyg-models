@@ -1,0 +1,3 @@
+blake3
+aiosqlite
+watchdog
