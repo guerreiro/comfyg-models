@@ -38,6 +38,7 @@ export interface ModelUserImage {
   caption: string | null;
   prompt: string | null;
   negative_prompt: string | null;
+  is_primary: number;
   created_at: string;
 }
 

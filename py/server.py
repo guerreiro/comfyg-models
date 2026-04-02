@@ -8,7 +8,13 @@ import secrets
 from pathlib import Path
 from typing import Any, Mapping
 
-from .database import get_model_detail, insert_model_user_image, list_models
+from .database import (
+    delete_model_user_image,
+    get_model_detail,
+    insert_model_user_image,
+    list_models,
+    set_primary_model_user_image,
+)
 from .civitai import verify_api_key
 from .scanner import get_scan_status, start_scan_job
 from .settings import ensure_data_dir, load_settings, redact_settings, save_settings
@@ -103,6 +109,8 @@ def register_routes(routes: Any) -> None:
     routes.get("/comfyg-models/api/models")(get_models_handler)
     routes.get(r"/comfyg-models/api/models/{model_id:.+}")(get_model_detail_handler)
     routes.post(r"/comfyg-models/api/models/{model_id:.+}/images")(post_model_image_handler)
+    routes.put(r"/comfyg-models/api/models/{model_id:.+}/images/{image_id:\d+}/primary")(put_model_primary_image_handler)
+    routes.delete(r"/comfyg-models/api/models/{model_id:.+}/images/{image_id:\d+}")(delete_model_image_handler)
     routes.get("/comfyg-models/api/user-images/{filename}")(get_user_image_handler)
     LOGGER.info("Registered settings API routes")
 
@@ -235,7 +243,8 @@ async def post_model_image_handler(request: Any) -> Any:
 
     model_id = request.match_info["model_id"]
     reader = await request.multipart()
-    uploaded_file = None
+    file_bytes: bytes | None = None
+    original_filename: str | None = None
     caption: str | None = None
     prompt: str | None = None
     negative_prompt: str | None = None
@@ -246,7 +255,10 @@ async def post_model_image_handler(request: Any) -> Any:
             break
 
         if field.name == "file":
-            uploaded_file = field
+            if not field.filename:
+                continue
+            original_filename = field.filename
+            file_bytes = await field.read(decode=False)
         elif field.name == "caption":
             caption = (await field.text()).strip() or None
         elif field.name == "prompt":
@@ -254,30 +266,27 @@ async def post_model_image_handler(request: Any) -> Any:
         elif field.name == "negative_prompt":
             negative_prompt = (await field.text()).strip() or None
 
-    if uploaded_file is None or not uploaded_file.filename:
+    if not original_filename or file_bytes is None:
         return _json_response(error_payload("Image file is required", "IMAGE_REQUIRED"), status=400)
 
-    suffix = Path(uploaded_file.filename).suffix.lower()
+    suffix = Path(original_filename).suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         return _json_response(error_payload("Unsupported image format", "INVALID_IMAGE_FORMAT"), status=400)
 
     safe_filename = f"{secrets.token_hex(12)}{suffix}"
     target_path = _user_images_dir() / safe_filename
 
-    size = 0
+    size = len(file_bytes)
+    if size == 0:
+        return _json_response(error_payload("Uploaded image is empty", "EMPTY_IMAGE"), status=400)
+    if size > 15 * 1024 * 1024:
+        return _json_response(error_payload("Image exceeds 15MB limit", "IMAGE_TOO_LARGE"), status=400)
+
     with target_path.open("wb") as handle:
-        while True:
-            chunk = await uploaded_file.read_chunk()
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > 15 * 1024 * 1024:
-                target_path.unlink(missing_ok=True)
-                return _json_response(error_payload("Image exceeds 15MB limit", "IMAGE_TOO_LARGE"), status=400)
-            handle.write(chunk)
+        handle.write(file_bytes)
 
     await insert_model_user_image(model_id, safe_filename, caption, prompt, negative_prompt)
-    LOGGER.info("Stored user image %s for model %s", safe_filename, model_id)
+    LOGGER.info("Stored user image %s for model %s (%s bytes)", safe_filename, model_id, size)
     return _json_response(
         {
             "ok": True,
@@ -297,3 +306,36 @@ async def get_user_image_handler(request: Any) -> Any:
     if not image_path.exists():
         return _json_response(error_payload("Image not found", "IMAGE_NOT_FOUND"), status=404)
     return web.FileResponse(image_path)
+
+
+async def put_model_primary_image_handler(request: Any) -> Any:
+    """Handle PUT /comfyg-models/api/models/{model_id}/images/{image_id}/primary."""
+    model_id = request.match_info["model_id"]
+    image_id = int(request.match_info["image_id"])
+    try:
+        await set_primary_model_user_image(model_id, image_id)
+    except Exception:
+        LOGGER.exception("Failed to set primary user image for model %s", model_id)
+        return _json_response(error_payload("Failed to set primary image", "PRIMARY_IMAGE_ERROR"), status=500)
+    return _json_response({"ok": True})
+
+
+async def delete_model_image_handler(request: Any) -> Any:
+    """Handle DELETE /comfyg-models/api/models/{model_id}/images/{image_id}."""
+    model_id = request.match_info["model_id"]
+    image_id = int(request.match_info["image_id"])
+    try:
+        image = await delete_model_user_image(model_id, image_id)
+    except Exception:
+        LOGGER.exception("Failed to delete user image %s for model %s", image_id, model_id)
+        return _json_response(error_payload("Failed to delete image", "DELETE_IMAGE_ERROR"), status=500)
+
+    if image is None:
+        return _json_response(error_payload("Image not found", "IMAGE_NOT_FOUND"), status=404)
+
+    image_path = _user_images_dir() / Path(str(image["filename"])).name
+    if image_path.exists():
+        image_path.unlink()
+
+    LOGGER.info("Deleted user image %s for model %s", image_id, model_id)
+    return _json_response({"ok": True})

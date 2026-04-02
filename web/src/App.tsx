@@ -1,23 +1,36 @@
-import { FormEvent, useDeferredValue, useEffect, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
+  ChevronDown,
+  ChevronUp,
+  GalleryHorizontal,
+  Grip,
   Eye,
   EyeOff,
   Filter,
   ImagePlus,
   Link2,
+  ScanSearch,
   Search,
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
-import { useModelDetailQuery, useModelImageUploadMutation, useModelsQuery } from "./hooks/useModels";
+import {
+  useModelDetailQuery,
+  useModelImageDeleteMutation,
+  useModelImageUploadMutation,
+  useModelPrimaryImageMutation,
+  useModelsQuery,
+} from "./hooks/useModels";
 import { useScanStatusQuery, useStartScanMutation } from "./hooks/useScan";
 import { useSaveSettingsMutation, useSettingsQuery } from "./hooks/useSettings";
 import type { CivitaiModelImage } from "./types/civitai";
-import type { Model } from "./types/model";
+import type { Model, ModelFilters } from "./types/model";
 
 type ModalView = "none" | "status" | "settings" | "model";
+type ModelModalTab = "gallery" | "overview" | "civitai";
 
 function getCivitaiUrl(model: Model): string | null {
   if (model.civitai_model_id === null || model.civitai_model_id === -1) {
@@ -75,7 +88,6 @@ export default function App() {
   const saveSettings = useSaveSettingsMutation();
   const scanStatusQuery = useScanStatusQuery();
   const startScan = useStartScanMutation();
-  const modelsQuery = useModelsQuery();
 
   const [modalView, setModalView] = useState<ModalView>("none");
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
@@ -86,12 +98,31 @@ export default function App() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [baseModelFilter, setBaseModelFilter] = useState<string>("all");
+  const [sort, setSort] = useState<ModelFilters["sort"]>("name");
+  const [sortDir, setSortDir] = useState<ModelFilters["sort_dir"]>("asc");
+  const [modelModalTab, setModelModalTab] = useState<ModelModalTab>("gallery");
+  const [showUploadForm, setShowUploadForm] = useState(false);
+  const [imagePendingDelete, setImagePendingDelete] = useState<number | null>(null);
   const deferredSearch = useDeferredValue(search);
+  const queryFilters = useMemo<ModelFilters>(
+    () => ({
+      search: deferredSearch.trim() || undefined,
+      type: typeFilter === "all" ? undefined : [typeFilter as Model["type"]],
+      base_model: baseModelFilter === "all" ? undefined : [baseModelFilter],
+      sort,
+      sort_dir: sortDir,
+    }),
+    [deferredSearch, typeFilter, baseModelFilter, sort, sortDir],
+  );
+  const modelsQuery = useModelsQuery(queryFilters);
 
   const selectedModel =
     modelsQuery.data?.items.find((item) => item.id === selectedModelId) ?? null;
   const modelDetailQuery = useModelDetailQuery(selectedModelId);
   const imageUpload = useModelImageUploadMutation(selectedModelId);
+  const primaryImageMutation = useModelPrimaryImageMutation(selectedModelId);
+  const deleteImageMutation = useModelImageDeleteMutation(selectedModelId);
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -102,19 +133,13 @@ export default function App() {
     setShowNsfwPreviews(settingsQuery.data.show_nsfw_previews);
   }, [settingsQuery.data]);
 
-  const models = modelsQuery.data?.items ?? [];
-  const availableTypes = Array.from(new Set(models.map((model) => model.type))).sort();
-  const filteredModels = models.filter((model) => {
-    const matchesType = typeFilter === "all" || model.type === typeFilter;
-    const baseModel = getBaseModel(model) ?? "";
-    const matchesSearch =
-      deferredSearch.trim() === "" ||
-      model.filename.toLowerCase().includes(deferredSearch.toLowerCase()) ||
-      (model.civitai_data?.name ?? "").toLowerCase().includes(deferredSearch.toLowerCase()) ||
-      baseModel.toLowerCase().includes(deferredSearch.toLowerCase());
-
-    return matchesType && matchesSearch;
-  });
+  const allModelsQuery = useModelsQuery({ sort: "name", sort_dir: "asc" });
+  const allModels = allModelsQuery.data?.items ?? [];
+  const filteredModels = modelsQuery.data?.items ?? [];
+  const availableTypes = Array.from(new Set(allModels.map((model) => model.type))).sort();
+  const availableBaseModels = Array.from(
+    new Set(allModels.map((model) => getBaseModel(model)).filter((value): value is string => Boolean(value))),
+  ).sort((a, b) => a.localeCompare(b));
 
   const handleSettingsSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -162,17 +187,8 @@ export default function App() {
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-5 py-6 lg:px-8">
         <header className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-3">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-stone-300">
-                <Sparkles className="h-4 w-4" />
-                ComfyUI Plugin
-              </span>
-              <div>
-                <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">comfyg-models</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-400 md:text-base">
-                  Browse local models as a visual library, not as a backoffice table.
-                </p>
-              </div>
+            <div>
+              <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">comfyg-models</h1>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -195,7 +211,7 @@ export default function App() {
             </div>
           </div>
 
-          <section className="grid gap-4 lg:grid-cols-[1.4fr_1fr_auto]">
+          <section className="grid gap-4 lg:grid-cols-[1.25fr_0.8fr_0.8fr]">
             <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
               <Search className="h-4 w-4 text-stone-500" />
               <input
@@ -225,16 +241,65 @@ export default function App() {
               </select>
             </label>
 
-            <button
-              type="button"
-              onClick={() => startScan.mutate()}
-              disabled={startScan.isPending || scanStatus?.status === "scanning"}
-              className="inline-flex items-center justify-center rounded-[1.4rem] bg-white px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-            >
-              {scanStatus?.status === "scanning" ? "Scanning..." : startScan.isPending ? "Starting..." : "Run scan"}
-            </button>
+            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+              <Sparkles className="h-4 w-4 text-stone-500" />
+              <select
+                value={sort}
+                onChange={(event) => setSort(event.target.value as NonNullable<ModelFilters["sort"]>)}
+                className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+              >
+                <option value="name" className="bg-stone-950">
+                  Sort by name
+                </option>
+                <option value="size" className="bg-stone-950">
+                  Sort by size
+                </option>
+                <option value="date" className="bg-stone-950">
+                  Sort by date
+                </option>
+                <option value="civitai_rating" className="bg-stone-950">
+                  Sort by CivitAI rating
+                </option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSortDir((current) => (current === "asc" ? "desc" : "asc"))}
+                className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-stone-300 transition hover:bg-white/10"
+              >
+                {sortDir === "asc" ? "ASC" : "DESC"}
+              </button>
+            </label>
+
           </section>
         </header>
+
+        <section className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setBaseModelFilter("all")}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+              baseModelFilter === "all"
+                ? "bg-white text-stone-950"
+                : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
+            }`}
+          >
+            All base models
+          </button>
+          {availableBaseModels.map((baseModel) => (
+            <button
+              key={baseModel}
+              type="button"
+              onClick={() => setBaseModelFilter(baseModel)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                baseModelFilter === baseModel
+                  ? "bg-emerald-300 text-stone-950"
+                  : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
+              }`}
+            >
+              {baseModel}
+            </button>
+          ))}
+        </section>
 
         <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {modelsQuery.isLoading ? (
@@ -257,8 +322,6 @@ export default function App() {
 
           {filteredModels.map((model) => {
             const preview = getModelPreview(model, showNsfwPreviews);
-            const matched = model.civitai_model_id !== null && model.civitai_model_id !== -1;
-            const notFound = model.civitai_model_id === -1;
             const baseModel = getBaseModel(model);
 
             return (
@@ -267,6 +330,9 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setSelectedModelId(model.id);
+                  setModelModalTab("gallery");
+                  setShowUploadForm(false);
+                  setImagePendingDelete(null);
                   setModalView("model");
                 }}
                 className="group overflow-hidden rounded-[1.7rem] border border-white/10 bg-white/5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.20)] transition hover:-translate-y-1 hover:border-white/20 hover:bg-white/[0.08]"
@@ -290,25 +356,19 @@ export default function App() {
                         <h2 className="truncate text-base font-semibold text-white">{model.filename}</h2>
                         <p className="mt-1 truncate text-xs uppercase tracking-[0.18em] text-stone-300">{model.type}</p>
                       </div>
-                      <span
-                        className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
-                          matched
-                            ? "bg-emerald-400/20 text-emerald-200"
-                            : notFound
-                              ? "bg-stone-300/15 text-stone-200"
-                              : "bg-amber-400/20 text-amber-200"
-                        }`}
-                      >
-                        {matched ? "identified" : notFound ? "not found" : "pending"}
-                      </span>
+                      {preview?.kind === "user" ? (
+                        <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-200">
+                          custom thumb
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
 
                 <div className="space-y-3 p-4">
                   <div className="flex items-center justify-between gap-3 text-sm text-stone-400">
-                    <span>{baseModel ?? "Local only"}</span>
-                    <span>{formatFileSize(model.file_size)}</span>
+                    <span className="truncate">{baseModel ?? "Local only"}</span>
+                    <span>{model.civitai_data?.stats?.rating ? `${model.civitai_data.stats.rating.toFixed(1)}★` : formatFileSize(model.file_size)}</span>
                   </div>
                 </div>
               </button>
@@ -321,21 +381,54 @@ export default function App() {
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-10 backdrop-blur-sm">
           <div className="w-full max-w-5xl rounded-[2rem] border border-white/10 bg-[#101114] shadow-[0_30px_100px_rgba(0,0,0,0.45)]">
             <div className="flex items-center justify-between border-b border-white/10 px-6 py-5">
-              <div>
-                <h2 className="text-xl font-semibold text-white">
-                  {modalView === "status" ? "Session Status" : modalView === "settings" ? "Settings" : selectedModel?.filename}
-                </h2>
-                <p className="mt-1 text-sm text-stone-400">
-                  {modalView === "status"
-                    ? "Scan pipeline progress and quick health snapshot."
-                    : modalView === "settings"
-                      ? "Plugin preferences and preview safety."
-                      : selectedModel?.civitai_data?.name ?? "Model details"}
-                </p>
-              </div>
+              {modalView === "model" && selectedModel ? (
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-300">
+                      {selectedModel.type}
+                    </span>
+                    {getBaseModel(selectedModel) ? (
+                      <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                        {getBaseModel(selectedModel)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <h2 className="mt-3 truncate text-xl font-semibold text-white">
+                    {selectedModel.civitai_data?.name ?? selectedModel.filename}
+                  </h2>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-stone-400">
+                    <span className="truncate">{selectedModel.filename}</span>
+                    {getCivitaiUrl(selectedModel) ? (
+                      <a
+                        href={getCivitaiUrl(selectedModel)!}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-stone-200 underline decoration-stone-600 underline-offset-4 transition hover:text-white"
+                      >
+                        <Link2 className="h-3.5 w-3.5" />
+                        CivitAI
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <h2 className="text-xl font-semibold text-white">
+                    {modalView === "status" ? "Session Status" : "Settings"}
+                  </h2>
+                  <p className="mt-1 text-sm text-stone-400">
+                    {modalView === "status"
+                      ? "Scan pipeline progress and quick health snapshot."
+                      : "Plugin preferences and preview safety."}
+                  </p>
+                </div>
+              )}
               <button
                 type="button"
-                onClick={() => setModalView("none")}
+                onClick={() => {
+                  setModalView("none");
+                  setImagePendingDelete(null);
+                }}
                 className="rounded-full border border-white/10 bg-white/5 p-2 text-stone-300 transition hover:bg-white/10"
               >
                 <X className="h-4 w-4" />
@@ -364,6 +457,26 @@ export default function App() {
                 </div>
 
                 <div className="space-y-4">
+                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-white">Library scan</p>
+                        <p className="mt-1 text-sm text-stone-400">
+                          Re-scan only when you add, remove or rename model files.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => startScan.mutate()}
+                        disabled={startScan.isPending || scanStatus?.status === "scanning"}
+                        className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                      >
+                        <ScanSearch className="h-4 w-4" />
+                        {scanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
+                      </button>
+                    </div>
+                  </div>
+
                   {[
                     {
                       title: "Directory scan",
@@ -486,118 +599,308 @@ export default function App() {
             ) : null}
 
             {modalView === "model" && selectedModel ? (
-              <div className="grid gap-6 p-6 lg:grid-cols-[1fr_0.9fr]">
-                <div className="space-y-5">
-                  <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-white/[0.03]">
-                    <div className="grid gap-4 p-4 md:grid-cols-2">
-                      {(modelDetailQuery.data?.user_images ?? []).map((image) => (
-                        <div key={image.id} className="overflow-hidden rounded-[1.2rem] border border-white/10 bg-black/20">
-                          <img
-                            src={`/comfyg-models/api/user-images/${image.filename}`}
-                            alt={image.caption ?? selectedModel.filename}
-                            className="aspect-[4/3] w-full object-cover"
-                          />
-                          <div className="p-3 text-sm text-stone-300">{image.caption ?? "Your image"}</div>
-                        </div>
-                      ))}
+              <div className="space-y-6 p-6">
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex flex-wrap gap-2">
+                      {selectedModel.civitai_data?.stats?.rating ? (
+                        <span className="inline-flex rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100">
+                          {selectedModel.civitai_data.stats.rating.toFixed(1)} rating
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setShowUploadForm((current) => !current)}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/10"
+                      >
+                        {showUploadForm ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        {showUploadForm ? "Hide uploader" : "Add images"}
+                      </button>
+                    </div>
+                  </div>
 
-                      {(modelDetailQuery.data?.user_images ?? []).length === 0 ? (
-                        <div className="flex min-h-[220px] items-center justify-center rounded-[1.2rem] border border-dashed border-white/10 bg-black/20 px-6 text-center text-sm text-stone-500">
+                  {showUploadForm ? (
+                    <form onSubmit={handleUploadSubmit} className="mt-5 space-y-4 rounded-[1.2rem] border border-white/10 bg-black/20 p-4">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                        <ImagePlus className="h-4 w-4" />
+                        Add images to your gallery
+                      </div>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                        className="block w-full text-sm text-stone-300 file:mr-4 file:rounded-full file:border-0 file:bg-white file:px-4 file:py-2 file:text-sm file:font-semibold file:text-stone-950"
+                      />
+                      <input
+                        type="text"
+                        value={uploadCaption}
+                        onChange={(event) => setUploadCaption(event.target.value)}
+                        placeholder="Optional label for your reference"
+                        className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-white/25"
+                      />
+                      {imageUpload.isError ? (
+                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                          {imageUpload.error.message}
+                        </p>
+                      ) : null}
+                      {imageUpload.isSuccess ? (
+                        <p className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                          Image uploaded successfully.
+                        </p>
+                      ) : null}
+                      {primaryImageMutation.isError ? (
+                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                          {primaryImageMutation.error.message}
+                        </p>
+                      ) : null}
+                      {deleteImageMutation.isError ? (
+                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                          {deleteImageMutation.error.message}
+                        </p>
+                      ) : null}
+                      <button
+                        type="submit"
+                        disabled={!uploadFile || imageUpload.isPending}
+                        className="inline-flex items-center justify-center rounded-full bg-white px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                      >
+                        {imageUpload.isPending ? "Uploading..." : "Upload image"}
+                      </button>
+                    </form>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: "gallery", label: "Gallery", icon: GalleryHorizontal },
+                    { id: "overview", label: "Overview", icon: Grip },
+                    { id: "civitai", label: "CivitAI", icon: Sparkles },
+                  ].map((tab) => {
+                    const Icon = tab.icon;
+                    const isActive = modelModalTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setModelModalTab(tab.id as ModelModalTab)}
+                        className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          isActive
+                            ? "bg-white text-stone-950"
+                            : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
+                        }`}
+                      >
+                        <Icon className="h-4 w-4" />
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {modelModalTab === "gallery" ? (
+                  <div className="space-y-5">
+                    <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-white/[0.03] p-4">
+                      {(modelDetailQuery.data?.user_images ?? []).length > 0 ? (
+                        <div className="columns-1 gap-4 md:columns-2 xl:columns-3">
+                          {(modelDetailQuery.data?.user_images ?? []).map((image) => (
+                            <div
+                              key={image.id}
+                              className="group relative mb-4 break-inside-avoid overflow-hidden rounded-[1.2rem] border border-white/10 bg-black/20"
+                            >
+                              {image.is_primary === 1 ? (
+                                <span className="absolute left-3 top-3 z-10 rounded-full bg-emerald-400/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-950">
+                                  Thumb
+                                </span>
+                              ) : null}
+                              <div className="absolute right-3 top-3 z-10 flex gap-2">
+                                {image.is_primary !== 1 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => primaryImageMutation.mutate(image.id)}
+                                    disabled={primaryImageMutation.isPending}
+                                    className="rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur transition hover:bg-black/70 disabled:opacity-60"
+                                  >
+                                    Thumb
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => setImagePendingDelete(image.id)}
+                                  className="rounded-full border border-rose-500/30 bg-black/55 p-2 text-rose-200 backdrop-blur transition hover:bg-rose-500/20"
+                                  aria-label="Delete image"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                              <img
+                                src={`/comfyg-models/api/user-images/${image.filename}`}
+                                alt={image.caption ?? selectedModel.filename}
+                                className="h-auto w-full transition duration-500 group-hover:scale-[1.01]"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex min-h-[320px] items-center justify-center rounded-[1.2rem] border border-dashed border-white/10 bg-black/20 px-6 text-center text-sm text-stone-500">
                           No personal images yet for this model.
                         </div>
-                      ) : null}
+                      )}
                     </div>
                   </div>
+                ) : null}
 
-                  <form onSubmit={handleUploadSubmit} className="space-y-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                      <ImagePlus className="h-4 w-4" />
-                      Upload your own thumb
-                    </div>
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
-                      className="block w-full text-sm text-stone-300 file:mr-4 file:rounded-full file:border-0 file:bg-white file:px-4 file:py-2 file:text-sm file:font-semibold file:text-stone-950"
-                    />
-                    <input
-                      type="text"
-                      value={uploadCaption}
-                      onChange={(event) => setUploadCaption(event.target.value)}
-                      placeholder="Caption for this image"
-                      className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-white/25"
-                    />
-                    {imageUpload.isError ? (
-                      <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                        {imageUpload.error.message}
-                      </p>
-                    ) : null}
-                    {imageUpload.isSuccess ? (
-                      <p className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-                        Image uploaded successfully.
-                      </p>
-                    ) : null}
-                    <button
-                      type="submit"
-                      disabled={!uploadFile || imageUpload.isPending}
-                      className="inline-flex items-center justify-center rounded-full bg-white px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-                    >
-                      {imageUpload.isPending ? "Uploading..." : "Upload image"}
-                    </button>
-                  </form>
-                </div>
-
-                <div className="space-y-5">
-                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-stone-500">{selectedModel.type}</p>
-                        <h3 className="mt-2 text-2xl font-semibold text-white">{selectedModel.filename}</h3>
-                        <p className="mt-2 text-sm text-stone-400">{selectedModel.civitai_data?.name ?? "Local-only model"}</p>
+                {modelModalTab === "overview" ? (
+                  <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+                    <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">Base model</dt>
+                        <dd className="text-right text-stone-200">{getBaseModel(selectedModel) ?? "-"}</dd>
                       </div>
-                      {getCivitaiUrl(selectedModel) ? (
-                        <a
-                          href={getCivitaiUrl(selectedModel)!}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
-                        >
-                          <Link2 className="h-4 w-4" />
-                          Open on CivitAI
-                        </a>
-                      ) : null}
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">Local path</dt>
+                        <dd className="max-w-[65%] break-all text-right text-stone-200">{selectedModel.directory}</dd>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">File size</dt>
+                        <dd className="text-right text-stone-200">{formatFileSize(selectedModel.file_size)}</dd>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">Hash mode</dt>
+                        <dd className="text-right text-stone-200">{selectedModel.blake3 ? "blake3" : selectedModel.sha256 ? "sha256" : "-"}</dd>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">Created</dt>
+                        <dd className="text-right text-stone-200">{selectedModel.created_at ?? "-"}</dd>
+                      </div>
+                    </dl>
+
+                    <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                      <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Quick notes</h4>
+                      <div className="mt-4 space-y-4 text-sm text-stone-300">
+                        <p>{selectedModel.note ?? "No personal notes yet for this model."}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {(selectedModel.tags ?? []).length > 0 ? (
+                            selectedModel.tags!.map((tag) => (
+                              <span
+                                key={tag}
+                                className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-medium text-stone-200"
+                              >
+                                {tag}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-stone-500">No tags yet.</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
+                ) : null}
 
-                  <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm">
-                    <div className="flex items-start justify-between gap-4">
-                      <dt className="text-stone-500">Base model</dt>
-                      <dd className="text-right text-stone-200">{getBaseModel(selectedModel) ?? "-"}</dd>
-                    </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <dt className="text-stone-500">Local path</dt>
-                      <dd className="max-w-[65%] break-all text-right text-stone-200">{selectedModel.directory}</dd>
-                    </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <dt className="text-stone-500">File size</dt>
-                      <dd className="text-right text-stone-200">{formatFileSize(selectedModel.file_size)}</dd>
-                    </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <dt className="text-stone-500">Hash mode</dt>
-                      <dd className="text-right text-stone-200">{selectedModel.blake3 ? "blake3" : selectedModel.sha256 ? "sha256" : "-"}</dd>
-                    </div>
-                    <div className="flex items-start justify-between gap-4">
-                      <dt className="text-stone-500">CivitAI ID</dt>
-                      <dd className="text-right text-stone-200">
-                        {selectedModel.civitai_model_id && selectedModel.civitai_model_id !== -1
-                          ? `${selectedModel.civitai_model_id}${selectedModel.civitai_version_id ? ` · v${selectedModel.civitai_version_id}` : ""}`
-                          : "-"}
-                      </dd>
-                    </div>
-                  </dl>
-                </div>
+                {modelModalTab === "civitai" ? (
+                  <div className="space-y-5">
+                    <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">CivitAI ID</dt>
+                        <dd className="text-right text-stone-200">
+                          {selectedModel.civitai_model_id && selectedModel.civitai_model_id !== -1
+                            ? `${selectedModel.civitai_model_id}${selectedModel.civitai_version_id ? ` · v${selectedModel.civitai_version_id}` : ""}`
+                            : "No CivitAI match"}
+                        </dd>
+                      </div>
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-stone-500">Last sync</dt>
+                        <dd className="text-right text-stone-200">{selectedModel.last_civitai_sync ?? "-"}</dd>
+                      </div>
+                    </dl>
+
+                    {(selectedModel.civitai_data?.stats || selectedModel.civitai_data?.modelVersions?.[0]?.trainedWords?.length) ? (
+                      <div className="space-y-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                        {selectedModel.civitai_data?.stats ? (
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Rating</p>
+                              <p className="mt-2 text-lg font-semibold text-white">
+                                {selectedModel.civitai_data.stats.rating?.toFixed(2) ?? "-"}
+                              </p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Downloads</p>
+                              <p className="mt-2 text-lg font-semibold text-white">
+                                {selectedModel.civitai_data.stats.downloadCount?.toLocaleString() ?? "-"}
+                              </p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Favorites</p>
+                              <p className="mt-2 text-lg font-semibold text-white">
+                                {selectedModel.civitai_data.stats.favoriteCount?.toLocaleString() ?? "-"}
+                              </p>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Ratings</p>
+                              <p className="mt-2 text-lg font-semibold text-white">
+                                {selectedModel.civitai_data.stats.ratingCount?.toLocaleString() ?? "-"}
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {selectedModel.civitai_data?.modelVersions?.[0]?.trainedWords?.length ? (
+                          <div className="space-y-2">
+                            <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Trigger words</p>
+                            <div className="flex flex-wrap gap-2">
+                              {selectedModel.civitai_data.modelVersions[0].trainedWords!.slice(0, 16).map((word) => (
+                                <span
+                                  key={word}
+                                  className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-medium text-stone-200"
+                                >
+                                  {word}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm text-stone-400">
+                        No additional CivitAI metadata available for this model.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {modalView === "model" && imagePendingDelete !== null ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[1.6rem] border border-white/10 bg-[#141519] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+            <h3 className="text-lg font-semibold text-white">Delete image?</h3>
+            <p className="mt-2 text-sm leading-6 text-stone-400">
+              This removes the image from this model gallery and deletes the stored file from the plugin data folder.
+            </p>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setImagePendingDelete(null)}
+                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await deleteImageMutation.mutateAsync(imagePendingDelete);
+                  setImagePendingDelete(null);
+                }}
+                disabled={deleteImageMutation.isPending}
+                className="rounded-full bg-rose-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:bg-rose-800"
+              >
+                {deleteImageMutation.isPending ? "Deleting..." : "Delete"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

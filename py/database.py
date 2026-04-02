@@ -14,7 +14,7 @@ from .settings import ensure_data_dir, get_data_dir
 
 LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "cache.db"
 
 SCHEMA_STATEMENTS = """
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS model_user_images (
     caption TEXT,
     prompt TEXT,
     negative_prompt TEXT,
+    is_primary INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -134,9 +135,40 @@ async def init_db() -> None:
         if user_version < 1:
             LOGGER.info("Applying schema version 1")
             await connection.executescript(SCHEMA_STATEMENTS)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            user_version = 1
         else:
             await connection.executescript(SCHEMA_STATEMENTS)
+
+        if user_version < 2:
+            LOGGER.info("Applying schema version 2")
+            columns: list[str] = []
+            async with connection.execute("PRAGMA table_info(model_user_images)") as cursor:
+                rows = await cursor.fetchall()
+                columns = [str(row[1]) for row in rows]
+            if "is_primary" not in columns:
+                await connection.execute(
+                    "ALTER TABLE model_user_images ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0"
+                )
+                await connection.execute(
+                    """
+                    UPDATE model_user_images
+                    SET is_primary = 1
+                    WHERE id IN (
+                        SELECT id
+                        FROM model_user_images latest
+                        WHERE latest.id = (
+                            SELECT inner_img.id
+                            FROM model_user_images inner_img
+                            WHERE inner_img.model_id = latest.model_id
+                            ORDER BY inner_img.created_at DESC, inner_img.id DESC
+                            LIMIT 1
+                        )
+                    )
+                    """
+                )
+            user_version = 2
+
+        await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
         await connection.commit()
         LOGGER.info("Database initialization finished with schema version %s", SCHEMA_VERSION)
@@ -361,7 +393,7 @@ async def list_models(filters: dict[str, Any] | None = None) -> list[dict[str, A
             SELECT img.filename
             FROM model_user_images img
             WHERE img.model_id = m.id
-            ORDER BY img.created_at DESC, img.id DESC
+            ORDER BY img.is_primary DESC, img.created_at DESC, img.id DESC
             LIMIT 1
         ) AS primary_user_image,
         note.note AS note,
@@ -403,7 +435,7 @@ async def get_model_detail(model_id: str) -> dict[str, Any] | None:
             SELECT img.filename
             FROM model_user_images img
             WHERE img.model_id = m.id
-            ORDER BY img.created_at DESC, img.id DESC
+            ORDER BY img.is_primary DESC, img.created_at DESC, img.id DESC
             LIMIT 1
         ) AS primary_user_image,
         note.note AS note,
@@ -422,7 +454,7 @@ async def get_model_detail(model_id: str) -> dict[str, Any] | None:
 
     detail = _parse_model_row(row)
     detail["user_images"] = await fetch_all(
-        "SELECT id, filename, caption, prompt, negative_prompt, created_at FROM model_user_images WHERE model_id = ? ORDER BY created_at DESC",
+        "SELECT id, filename, caption, prompt, negative_prompt, is_primary, created_at FROM model_user_images WHERE model_id = ? ORDER BY is_primary DESC, created_at DESC, id DESC",
         (model_id,),
     )
     detail["prompts"] = await fetch_all(
@@ -444,8 +476,58 @@ async def insert_model_user_image(
     negative_prompt: str | None,
 ) -> None:
     """Persist a user-provided image reference for a model."""
+    existing_primary = await fetch_one(
+        "SELECT id FROM model_user_images WHERE model_id = ? AND is_primary = 1 LIMIT 1",
+        (model_id,),
+    )
     query = """
-    INSERT INTO model_user_images (model_id, filename, caption, prompt, negative_prompt)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO model_user_images (model_id, filename, caption, prompt, negative_prompt, is_primary)
+    VALUES (?, ?, ?, ?, ?, ?)
     """
-    await execute(query, (model_id, filename, caption, prompt, negative_prompt))
+    await execute(query, (model_id, filename, caption, prompt, negative_prompt, 0 if existing_primary else 1))
+
+
+async def set_primary_model_user_image(model_id: str, image_id: int) -> None:
+    """Mark one user image as the primary thumbnail for a model."""
+    await execute("UPDATE model_user_images SET is_primary = 0 WHERE model_id = ?", (model_id,))
+    await execute(
+        "UPDATE model_user_images SET is_primary = 1 WHERE model_id = ? AND id = ?",
+        (model_id, image_id),
+    )
+
+
+async def get_model_user_image(model_id: str, image_id: int) -> dict[str, Any] | None:
+    """Return one user image row for a model."""
+    return await fetch_one(
+        """
+        SELECT id, model_id, filename, is_primary
+        FROM model_user_images
+        WHERE model_id = ? AND id = ?
+        """,
+        (model_id, image_id),
+    )
+
+
+async def delete_model_user_image(model_id: str, image_id: int) -> dict[str, Any] | None:
+    """Delete one user image and promote another image when needed."""
+    image = await get_model_user_image(model_id, image_id)
+    if image is None:
+        return None
+
+    await execute("DELETE FROM model_user_images WHERE model_id = ? AND id = ?", (model_id, image_id))
+
+    if int(image.get("is_primary") or 0) == 1:
+        replacement = await fetch_one(
+            """
+            SELECT id
+            FROM model_user_images
+            WHERE model_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (model_id,),
+        )
+        if replacement is not None:
+            await set_primary_model_user_image(model_id, int(replacement["id"]))
+
+    return image

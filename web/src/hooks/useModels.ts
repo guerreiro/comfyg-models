@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Model, ModelDetail } from "../types/model";
+import type { Model, ModelDetail, ModelFilters } from "../types/model";
 import { queryKeys } from "./queryKeys";
 
 interface ErrorPayload {
@@ -19,8 +19,34 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return data;
 }
 
-async function fetchModels(): Promise<ModelsResponse> {
-  const response = await fetch("/comfyg-models/api/models");
+function buildModelsUrl(filters: ModelFilters): string {
+  const params = new URLSearchParams();
+
+  if (filters.type?.length) {
+    params.set("type", filters.type.join(","));
+  }
+  if (filters.base_model?.length) {
+    params.set("base_model", filters.base_model.join(","));
+  }
+  if (filters.tags?.length) {
+    params.set("tags", filters.tags.join(","));
+  }
+  if (filters.search) {
+    params.set("search", filters.search);
+  }
+  if (filters.sort) {
+    params.set("sort", filters.sort);
+  }
+  if (filters.sort_dir) {
+    params.set("sort_dir", filters.sort_dir);
+  }
+
+  const query = params.toString();
+  return `/comfyg-models/api/models${query ? `?${query}` : ""}`;
+}
+
+async function fetchModels(filters: ModelFilters): Promise<ModelsResponse> {
+  const response = await fetch(buildModelsUrl(filters));
   return parseResponse<ModelsResponse>(response);
 }
 
@@ -32,6 +58,22 @@ async function fetchModelDetail(modelId: string): Promise<ModelDetail> {
 interface UploadModelImageInput {
   file: File;
   caption?: string;
+}
+
+async function setPrimaryModelImage(modelId: string, imageId: number): Promise<{ ok: true }> {
+  const response = await fetch(
+    `/comfyg-models/api/models/${encodeURIComponent(modelId)}/images/${imageId}/primary`,
+    { method: "PUT" },
+  );
+  return parseResponse<{ ok: true }>(response);
+}
+
+async function deleteModelImage(modelId: string, imageId: number): Promise<{ ok: true }> {
+  const response = await fetch(
+    `/comfyg-models/api/models/${encodeURIComponent(modelId)}/images/${imageId}`,
+    { method: "DELETE" },
+  );
+  return parseResponse<{ ok: true }>(response);
 }
 
 async function uploadModelImage(modelId: string, input: UploadModelImageInput): Promise<{ ok: true }> {
@@ -48,10 +90,10 @@ async function uploadModelImage(modelId: string, input: UploadModelImageInput): 
   return parseResponse<{ ok: true }>(response);
 }
 
-export function useModelsQuery() {
+export function useModelsQuery(filters: ModelFilters) {
   return useQuery({
-    queryKey: queryKeys.models,
-    queryFn: fetchModels,
+    queryKey: [...queryKeys.models, filters],
+    queryFn: () => fetchModels(filters),
   });
 }
 
@@ -68,6 +110,34 @@ export function useModelImageUploadMutation(modelId: string | null) {
 
   return useMutation({
     mutationFn: (input: UploadModelImageInput) => uploadModelImage(modelId!, input),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      if (modelId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
+      }
+    },
+  });
+}
+
+export function useModelPrimaryImageMutation(modelId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (imageId: number) => setPrimaryModelImage(modelId!, imageId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      if (modelId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
+      }
+    },
+  });
+}
+
+export function useModelImageDeleteMutation(modelId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (imageId: number) => deleteModelImage(modelId!, imageId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.models });
       if (modelId) {
