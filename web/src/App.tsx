@@ -2,8 +2,10 @@ import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react
 import {
   ChevronDown,
   ChevronUp,
+  FolderOpen,
   GalleryHorizontal,
   Grip,
+  Images,
   Eye,
   EyeOff,
   Filter,
@@ -12,11 +14,11 @@ import {
   ScanSearch,
   Search,
   Settings2,
-  ShieldCheck,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
+import { useDirectoryPickerMutation } from "./hooks/useDirectoryPicker";
 import {
   useModelDetailQuery,
   useModelImageDeleteMutation,
@@ -24,13 +26,22 @@ import {
   useModelPrimaryImageMutation,
   useModelsQuery,
 } from "./hooks/useModels";
+import {
+  useImageDetailQuery,
+  useImageFiltersQuery,
+  useImagesQuery,
+  useResultsImageUploadMutation,
+  useRevealImageMutation,
+} from "./hooks/useImages";
+import { useResultsScanStatusQuery, useStartResultsScanMutation } from "./hooks/useResultsScan";
 import { useScanStatusQuery, useStartScanMutation } from "./hooks/useScan";
 import { useSaveSettingsMutation, useSettingsQuery } from "./hooks/useSettings";
 import type { CivitaiModelImage } from "./types/civitai";
-import type { Model, ModelFilters } from "./types/model";
+import type { GalleryImageFilters, ImageFilterBucketItem, Model, ModelFilters } from "./types/model";
 
-type ModalView = "none" | "status" | "settings" | "model";
+type ModalView = "none" | "scan-models" | "scan-results" | "settings" | "model" | "image";
 type ModelModalTab = "gallery" | "overview" | "civitai";
+type PrimaryView = "library" | "results";
 
 function getCivitaiUrl(model: Model): string | null {
   if (model.civitai_model_id === null || model.civitai_model_id === -1) {
@@ -83,17 +94,93 @@ function getBaseModel(model: Model): string | null {
   );
 }
 
+function addUniquePath(paths: string[], value: string): string[] {
+  const normalized = value.trim();
+  if (!normalized) {
+    return paths;
+  }
+  return Array.from(new Set([...paths, normalized]));
+}
+
+function getImageDisplayTitle(promptText: string | null, filename: string | null): string {
+  if (promptText?.trim()) {
+    return promptText;
+  }
+  if (filename?.trim()) {
+    return filename;
+  }
+  return "Generated image";
+}
+
+function FilterChipGroup({
+  label,
+  items,
+  selectedValue,
+  allLabel,
+  onSelect,
+}: {
+  label: string;
+  items: ImageFilterBucketItem[];
+  selectedValue: string;
+  allLabel: string;
+  onSelect: (value: string) => void;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">{label}</p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onSelect("all")}
+          className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+            selectedValue === "all"
+              ? "bg-white text-stone-950"
+              : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
+          }`}
+        >
+          {allLabel}
+        </button>
+        {items.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onSelect(item.value)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              selectedValue === item.value
+                ? "bg-emerald-300 text-stone-950"
+                : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
+            }`}
+          >
+            {item.value} <span className="text-[10px] opacity-70">{item.count}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const settingsQuery = useSettingsQuery();
   const saveSettings = useSaveSettingsMutation();
   const scanStatusQuery = useScanStatusQuery();
   const startScan = useStartScanMutation();
+  const resultsScanStatusQuery = useResultsScanStatusQuery();
+  const startResultsScan = useStartResultsScanMutation();
+  const directoryPicker = useDirectoryPickerMutation();
 
+  const [primaryView, setPrimaryView] = useState<PrimaryView>("library");
   const [modalView, setModalView] = useState<ModalView>("none");
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [previewCacheEnabled, setPreviewCacheEnabled] = useState(true);
   const [showNsfwPreviews, setShowNsfwPreviews] = useState(false);
+  const [generatedImageScanPaths, setGeneratedImageScanPaths] = useState<string[]>([]);
+  const [newGeneratedPath, setNewGeneratedPath] = useState("");
   const [uploadCaption, setUploadCaption] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [search, setSearch] = useState("");
@@ -104,7 +191,19 @@ export default function App() {
   const [modelModalTab, setModelModalTab] = useState<ModelModalTab>("gallery");
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [imagePendingDelete, setImagePendingDelete] = useState<number | null>(null);
+  const [resultsSearch, setResultsSearch] = useState("");
+  const [resultsSourceType, setResultsSourceType] = useState<"all" | "upload" | "scanned_file">("all");
+  const [resultsMetadataFilter, setResultsMetadataFilter] = useState<"all" | "with" | "without">("all");
+  const [resultsModelRef, setResultsModelRef] = useState("all");
+  const [resultsLoraRef, setResultsLoraRef] = useState("all");
+  const [resultsBaseModelRef, setResultsBaseModelRef] = useState("all");
+  const [scanPathsSavedAt, setScanPathsSavedAt] = useState<number | null>(null);
+  const [resultsDropActive, setResultsDropActive] = useState(false);
+  const [resultsUploadNotice, setResultsUploadNotice] = useState<string | null>(null);
+  const [showImageMetadata, setShowImageMetadata] = useState(false);
+  const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
   const deferredSearch = useDeferredValue(search);
+  const deferredResultsSearch = useDeferredValue(resultsSearch);
   const queryFilters = useMemo<ModelFilters>(
     () => ({
       search: deferredSearch.trim() || undefined,
@@ -116,13 +215,30 @@ export default function App() {
     [deferredSearch, typeFilter, baseModelFilter, sort, sortDir],
   );
   const modelsQuery = useModelsQuery(queryFilters);
+  const imageFilters = useMemo<GalleryImageFilters>(
+    () => ({
+      search: deferredResultsSearch.trim() || undefined,
+      model_ref: resultsModelRef === "all" ? undefined : resultsModelRef,
+      lora_ref: resultsLoraRef === "all" ? undefined : resultsLoraRef,
+      base_model: resultsBaseModelRef === "all" ? undefined : resultsBaseModelRef,
+      source_type: resultsSourceType === "all" ? undefined : resultsSourceType,
+      has_metadata:
+        resultsMetadataFilter === "all" ? undefined : resultsMetadataFilter === "with",
+    }),
+    [deferredResultsSearch, resultsBaseModelRef, resultsLoraRef, resultsMetadataFilter, resultsModelRef, resultsSourceType],
+  );
+  const imagesQuery = useImagesQuery(imageFilters);
+  const imageFiltersQuery = useImageFiltersQuery(imageFilters);
 
   const selectedModel =
     modelsQuery.data?.items.find((item) => item.id === selectedModelId) ?? null;
   const modelDetailQuery = useModelDetailQuery(selectedModelId);
+  const imageDetailQuery = useImageDetailQuery(selectedImageId);
   const imageUpload = useModelImageUploadMutation(selectedModelId);
   const primaryImageMutation = useModelPrimaryImageMutation(selectedModelId);
   const deleteImageMutation = useModelImageDeleteMutation(selectedModelId);
+  const resultsImageUpload = useResultsImageUploadMutation();
+  const revealImage = useRevealImageMutation();
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -131,7 +247,29 @@ export default function App() {
 
     setPreviewCacheEnabled(settingsQuery.data.preview_cache_enabled);
     setShowNsfwPreviews(settingsQuery.data.show_nsfw_previews);
+    setGeneratedImageScanPaths(settingsQuery.data.generated_image_scan_paths ?? []);
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (scanPathsSavedAt === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setScanPathsSavedAt(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [scanPathsSavedAt]);
+
+  useEffect(() => {
+    if (!resultsUploadNotice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setResultsUploadNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [resultsUploadNotice]);
+
+  useEffect(() => {
+    setShowImageMetadata(false);
+    setImagePreviewFailed(false);
+  }, [selectedImageId]);
 
   const allModelsQuery = useModelsQuery({ sort: "name", sort_dir: "asc" });
   const allModels = allModelsQuery.data?.items ?? [];
@@ -141,6 +279,17 @@ export default function App() {
     new Set(allModels.map((model) => getBaseModel(model)).filter((value): value is string => Boolean(value))),
   ).sort((a, b) => a.localeCompare(b));
 
+  const persistGeneratedScanPaths = async (paths: string[]) => {
+    setScanPathsSavedAt(null);
+    setGeneratedImageScanPaths(paths);
+    await saveSettings.mutateAsync({
+      preview_cache_enabled: settingsQuery.data?.preview_cache_enabled ?? previewCacheEnabled,
+      show_nsfw_previews: settingsQuery.data?.show_nsfw_previews ?? showNsfwPreviews,
+      generated_image_scan_paths: paths,
+    });
+    setScanPathsSavedAt(Date.now());
+  };
+
   const handleSettingsSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -148,6 +297,7 @@ export default function App() {
       ...(apiKey.trim() ? { civitai_api_key: apiKey.trim() } : {}),
       preview_cache_enabled: previewCacheEnabled,
       show_nsfw_previews: showNsfwPreviews,
+      generated_image_scan_paths: generatedImageScanPaths,
     });
 
     setApiKey("");
@@ -171,6 +321,7 @@ export default function App() {
   const username = saveSettings.data?.civitai_username;
   const configured = settingsQuery.data?.civitai_api_key_configured ?? false;
   const scanStatus = scanStatusQuery.data;
+  const resultsScanStatus = resultsScanStatusQuery.data;
   const scanProgress =
     scanStatus && scanStatus.total > 0 ? Math.round((scanStatus.done / scanStatus.total) * 100) : 0;
   const hashingProgress =
@@ -181,24 +332,60 @@ export default function App() {
     scanStatus && scanStatus.civitai_progress.total > 0
       ? Math.round((scanStatus.civitai_progress.done / scanStatus.civitai_progress.total) * 100)
       : 0;
+  const resultsScanProgress =
+    resultsScanStatus && resultsScanStatus.total > 0
+      ? Math.round((resultsScanStatus.done / resultsScanStatus.total) * 100)
+      : 0;
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(236,122,49,0.10),_transparent_24%),radial-gradient(circle_at_85%_10%,_rgba(56,189,149,0.08),_transparent_22%),linear-gradient(180deg,_#09090b_0%,_#111215_42%,_#17181d_100%)] text-stone-100">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-5 py-6 lg:px-8">
         <header className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div>
+            <div className="space-y-4">
               <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">comfyg-models</h1>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { id: "library", label: "Library", icon: Sparkles },
+                  { id: "results", label: "Results", icon: Images },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isActive = primaryView === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setPrimaryView(item.id as PrimaryView)}
+                      className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        isActive
+                          ? "bg-white text-stone-950"
+                          : "border border-white/10 bg-white/8 text-stone-200 hover:bg-white/12"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={() => setModalView("status")}
+                onClick={() => setModalView("scan-models")}
                 className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
               >
-                <ShieldCheck className="h-4 w-4" />
-                Status
+                <ScanSearch className="h-4 w-4" />
+                Scan Models
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalView("scan-results")}
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
+              >
+                <Images className="h-4 w-4" />
+                Scan Results
               </button>
               <button
                 type="button"
@@ -211,68 +398,107 @@ export default function App() {
             </div>
           </div>
 
-          <section className="grid gap-4 lg:grid-cols-[1.25fr_0.8fr_0.8fr]">
-            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-              <Search className="h-4 w-4 text-stone-500" />
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by filename, CivitAI title or base model"
-                className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
-              />
-            </label>
+          {primaryView === "library" ? (
+            <section className="grid gap-4 lg:grid-cols-[1.25fr_0.8fr_0.8fr]">
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Search className="h-4 w-4 text-stone-500" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search by filename, CivitAI title or base model"
+                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
+                />
+              </label>
 
-            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-              <Filter className="h-4 w-4 text-stone-500" />
-              <select
-                value={typeFilter}
-                onChange={(event) => setTypeFilter(event.target.value)}
-                className="w-full appearance-none bg-transparent text-sm text-white outline-none"
-              >
-                <option value="all" className="bg-stone-950">
-                  All model types
-                </option>
-                {availableTypes.map((type) => (
-                  <option key={type} value={type} className="bg-stone-950">
-                    {type}
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Filter className="h-4 w-4 text-stone-500" />
+                <select
+                  value={typeFilter}
+                  onChange={(event) => setTypeFilter(event.target.value)}
+                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+                >
+                  <option value="all" className="bg-stone-950">
+                    All model types
                   </option>
-                ))}
-              </select>
-            </label>
+                  {availableTypes.map((type) => (
+                    <option key={type} value={type} className="bg-stone-950">
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-              <Sparkles className="h-4 w-4 text-stone-500" />
-              <select
-                value={sort}
-                onChange={(event) => setSort(event.target.value as NonNullable<ModelFilters["sort"]>)}
-                className="w-full appearance-none bg-transparent text-sm text-white outline-none"
-              >
-                <option value="name" className="bg-stone-950">
-                  Sort by name
-                </option>
-                <option value="size" className="bg-stone-950">
-                  Sort by size
-                </option>
-                <option value="date" className="bg-stone-950">
-                  Sort by date
-                </option>
-                <option value="civitai_rating" className="bg-stone-950">
-                  Sort by CivitAI rating
-                </option>
-              </select>
-              <button
-                type="button"
-                onClick={() => setSortDir((current) => (current === "asc" ? "desc" : "asc"))}
-                className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-stone-300 transition hover:bg-white/10"
-              >
-                {sortDir === "asc" ? "ASC" : "DESC"}
-              </button>
-            </label>
-
-          </section>
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Sparkles className="h-4 w-4 text-stone-500" />
+                <select
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value as NonNullable<ModelFilters["sort"]>)}
+                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+                >
+                  <option value="name" className="bg-stone-950">
+                    Sort by name
+                  </option>
+                  <option value="size" className="bg-stone-950">
+                    Sort by size
+                  </option>
+                  <option value="date" className="bg-stone-950">
+                    Sort by date
+                  </option>
+                  <option value="civitai_rating" className="bg-stone-950">
+                    Sort by CivitAI rating
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setSortDir((current) => (current === "asc" ? "desc" : "asc"))}
+                  className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-stone-300 transition hover:bg-white/10"
+                >
+                  {sortDir === "asc" ? "ASC" : "DESC"}
+                </button>
+              </label>
+            </section>
+          ) : (
+            <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr_0.8fr]">
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Search className="h-4 w-4 text-stone-500" />
+                <input
+                  type="text"
+                  value={resultsSearch}
+                  onChange={(event) => setResultsSearch(event.target.value)}
+                  placeholder="Search by prompt or filename"
+                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
+                />
+              </label>
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Images className="h-4 w-4 text-stone-500" />
+                <select
+                  value={resultsSourceType}
+                  onChange={(event) => setResultsSourceType(event.target.value as "all" | "upload" | "scanned_file")}
+                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+                >
+                  <option value="all" className="bg-stone-950">All sources</option>
+                  <option value="upload" className="bg-stone-950">Uploads</option>
+                  <option value="scanned_file" className="bg-stone-950">Scanned</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+                <Filter className="h-4 w-4 text-stone-500" />
+                <select
+                  value={resultsMetadataFilter}
+                  onChange={(event) => setResultsMetadataFilter(event.target.value as "all" | "with" | "without")}
+                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+                >
+                  <option value="all" className="bg-stone-950">All metadata states</option>
+                  <option value="with" className="bg-stone-950">With metadata</option>
+                  <option value="without" className="bg-stone-950">Without metadata</option>
+                </select>
+              </label>
+            </section>
+          )}
         </header>
 
+        {primaryView === "library" ? (
         <section className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -300,7 +526,40 @@ export default function App() {
             </button>
           ))}
         </section>
+        ) : null}
 
+        {primaryView === "results" &&
+        ((imageFiltersQuery.data?.model.length ?? 0) > 0 ||
+          (imageFiltersQuery.data?.lora.length ?? 0) > 0 ||
+          (imageFiltersQuery.data?.base_model.length ?? 0) > 0) ? (
+          <section className="space-y-4 rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <FilterChipGroup
+                label="Models"
+                items={imageFiltersQuery.data?.model ?? []}
+                selectedValue={resultsModelRef}
+                allLabel="All models"
+                onSelect={setResultsModelRef}
+              />
+              <FilterChipGroup
+                label="LoRAs"
+                items={imageFiltersQuery.data?.lora ?? []}
+                selectedValue={resultsLoraRef}
+                allLabel="All LoRAs"
+                onSelect={setResultsLoraRef}
+              />
+              <FilterChipGroup
+                label="Base models"
+                items={imageFiltersQuery.data?.base_model ?? []}
+                selectedValue={resultsBaseModelRef}
+                allLabel="All base models"
+                onSelect={setResultsBaseModelRef}
+              />
+            </div>
+          </section>
+        ) : null}
+
+        {primaryView === "library" ? (
         <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {modelsQuery.isLoading ? (
             <div className="col-span-full rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
@@ -375,6 +634,110 @@ export default function App() {
             );
           })}
         </section>
+        ) : (
+        <section
+          className="relative rounded-[1.8rem]"
+          onDragOver={(event) => {
+            event.preventDefault();
+            setResultsDropActive(true);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setResultsDropActive(false);
+            }
+          }}
+          onDrop={async (event) => {
+            event.preventDefault();
+            setResultsDropActive(false);
+            const files = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith("image/"));
+            if (files.length === 0) {
+              return;
+            }
+            setResultsUploadNotice(null);
+            let imported = 0;
+            for (const file of files) {
+              await resultsImageUpload.mutateAsync(file);
+              imported += 1;
+            }
+            setResultsUploadNotice(
+              imported === 1 ? "1 image added to Results." : `${imported} images added to Results.`,
+            );
+          }}
+        >
+          {resultsDropActive ? (
+            <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[1.8rem] border border-dashed border-emerald-300/50 bg-emerald-300/10 backdrop-blur-sm">
+              <div className="rounded-[1.4rem] border border-emerald-300/30 bg-black/55 px-6 py-5 text-center">
+                <p className="text-sm font-semibold text-emerald-100">Drop images to add them to Results</p>
+                <p className="mt-1 text-xs text-emerald-200/80">PNG metadata will be indexed automatically when available.</p>
+              </div>
+            </div>
+          ) : null}
+
+          {resultsUploadNotice ? (
+            <div className="mb-5 rounded-[1.3rem] border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+              {resultsUploadNotice}
+            </div>
+          ) : null}
+
+          {resultsImageUpload.isError ? (
+            <div className="mb-5 rounded-[1.3rem] border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {resultsImageUpload.error.message}
+            </div>
+          ) : null}
+
+          <div className="columns-1 gap-5 sm:columns-2 xl:columns-3 2xl:columns-4">
+            {imagesQuery.isLoading ? (
+              <div className="mb-5 break-inside-avoid rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
+                Loading images...
+              </div>
+            ) : null}
+            {imagesQuery.isError ? (
+              <div className="mb-5 break-inside-avoid rounded-[1.8rem] border border-rose-500/20 bg-rose-500/10 p-8 text-sm text-rose-200">
+                {imagesQuery.error.message}
+              </div>
+            ) : null}
+            {!imagesQuery.isLoading && (imagesQuery.data?.items.length ?? 0) === 0 ? (
+              <div className="mb-5 break-inside-avoid rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
+                No images matched the current filters.
+              </div>
+            ) : null}
+            {(imagesQuery.data?.items ?? []).map((image) => (
+              <button
+                key={image.id}
+                type="button"
+                onClick={() => {
+                  setSelectedImageId(image.id);
+                  setModalView("image");
+                }}
+                className="group mb-5 block w-full break-inside-avoid overflow-hidden rounded-[1.7rem] border border-white/10 bg-white/5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.20)] transition hover:-translate-y-1 hover:border-white/20 hover:bg-white/[0.08]"
+              >
+                <div className="relative overflow-hidden bg-[linear-gradient(135deg,_#1c1d22,_#282a31_50%,_#1b1c20)]">
+                  <img src={image.preview_url} alt={image.sha256} className="h-auto w-full transition duration-500 group-hover:scale-[1.01]" />
+                  <div className="absolute left-3 top-3 flex gap-2">
+                    {(image.sources ?? []).slice(0, 2).map((source) => (
+                      <span key={source.id} className="rounded-full border border-white/10 bg-black/55 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur">
+                        {source.source_type === "upload" ? "Upload" : "Generated"}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-3 p-4">
+                  <p className="line-clamp-2 text-sm text-stone-200">
+                    {getImageDisplayTitle(image.prompt_text, image.sources?.[0]?.filename ?? null)}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {(image.tags ?? []).filter((tag) => tag.tag_type !== "prompt_term").slice(0, 4).map((tag) => (
+                      <span key={`${tag.tag_type}:${tag.tag}`} className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[11px] text-stone-300">
+                        {tag.tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+        )}
       </div>
 
       {modalView !== "none" ? (
@@ -411,15 +774,38 @@ export default function App() {
                     ) : null}
                   </div>
                 </div>
+              ) : modalView === "image" && imageDetailQuery.data ? (
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(imageDetailQuery.data.sources ?? []).slice(0, 2).map((source) => (
+                      <span
+                        key={source.id}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-300"
+                      >
+                        {source.source_type === "upload" ? "Upload" : "Generated"}
+                      </span>
+                    ))}
+                  </div>
+                  <h2 className="mt-3 truncate text-xl font-semibold text-white">Image #{imageDetailQuery.data.id}</h2>
+                  <div className="mt-1 text-sm text-stone-400">
+                    {imageDetailQuery.data.sources?.[0]?.filename ?? imageDetailQuery.data.sha256}
+                  </div>
+                </div>
               ) : (
                 <div>
                   <h2 className="text-xl font-semibold text-white">
-                    {modalView === "status" ? "Session Status" : "Settings"}
+                    {modalView === "scan-models"
+                      ? "Scan Models"
+                      : modalView === "scan-results"
+                        ? "Scan Results"
+                        : "Settings"}
                   </h2>
                   <p className="mt-1 text-sm text-stone-400">
-                    {modalView === "status"
-                      ? "Scan pipeline progress and quick health snapshot."
-                      : "Plugin preferences and preview safety."}
+                    {modalView === "scan-models"
+                      ? "Run and monitor the local model scan pipeline."
+                      : modalView === "scan-results"
+                        ? "Scan configured folders for generated PNG images with ComfyUI metadata."
+                        : "Plugin preferences and preview safety."}
                   </p>
                 </div>
               )}
@@ -435,82 +821,194 @@ export default function App() {
               </button>
             </div>
 
-            {modalView === "status" ? (
-              <div className="grid gap-5 p-6 lg:grid-cols-2">
-                <div className="space-y-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex items-center justify-between text-sm text-stone-300">
-                    <span>Models in library</span>
-                    <span>{modelsQuery.data?.count ?? 0}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm text-stone-300">
-                    <span>API key</span>
-                    <span>{configured ? "configured" : "missing"}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm text-stone-300">
-                    <span>Safe previews</span>
-                    <span>{showNsfwPreviews ? "disabled" : "enabled"}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm text-stone-300">
-                    <span>Last verification</span>
-                    <span>{username ?? "pending"}</span>
+            {modalView === "scan-models" ? (
+              <div className="space-y-4 p-6">
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Model library scan</p>
+                      <p className="mt-1 text-sm text-stone-400">
+                        Re-scan only when you add, remove or rename model files.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => startScan.mutate()}
+                      disabled={startScan.isPending || scanStatus?.status === "scanning"}
+                      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                    >
+                      <ScanSearch className="h-4 w-4" />
+                      {scanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
+                    </button>
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-white">Library scan</p>
-                        <p className="mt-1 text-sm text-stone-400">
-                          Re-scan only when you add, remove or rename model files.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => startScan.mutate()}
-                        disabled={startScan.isPending || scanStatus?.status === "scanning"}
-                        className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-                      >
-                        <ScanSearch className="h-4 w-4" />
-                        {scanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
-                      </button>
+                {[
+                  {
+                    title: "Directory scan",
+                    progress: scanProgress,
+                    label:
+                      scanStatus?.status === "scanning"
+                        ? `${scanStatus.done} of ${scanStatus.total || "?"}`
+                        : "Idle",
+                  },
+                  {
+                    title: "Hashing",
+                    progress: hashingProgress,
+                    label: scanStatus?.hashing_progress.total
+                      ? `${scanStatus.hashing_progress.done} of ${scanStatus.hashing_progress.total}`
+                      : "No pending hashes",
+                  },
+                  {
+                    title: "CivitAI sync",
+                    progress: civitaiProgress,
+                    label: scanStatus?.civitai_progress.total
+                      ? `${scanStatus.civitai_progress.done} of ${scanStatus.civitai_progress.total}`
+                      : "No pending sync",
+                  },
+                ].map((item) => (
+                  <div key={item.title} className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex items-center justify-between text-sm text-stone-300">
+                      <span className="font-semibold text-white">{item.title}</span>
+                      <span>{item.label}</span>
+                    </div>
+                    <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/10">
+                      <div className="h-full rounded-full bg-white transition-all" style={{ width: `${item.progress}%` }} />
                     </div>
                   </div>
+                ))}
+              </div>
+            ) : null}
 
-                  {[
-                    {
-                      title: "Directory scan",
-                      progress: scanProgress,
-                      label:
-                        scanStatus?.status === "scanning"
-                          ? `${scanStatus.done} of ${scanStatus.total || "?"}`
-                          : "Idle",
-                    },
-                    {
-                      title: "Hashing",
-                      progress: hashingProgress,
-                      label: scanStatus?.hashing_progress.total
-                        ? `${scanStatus.hashing_progress.done} of ${scanStatus.hashing_progress.total}`
-                        : "No pending hashes",
-                    },
-                    {
-                      title: "CivitAI sync",
-                      progress: civitaiProgress,
-                      label: scanStatus?.civitai_progress.total
-                        ? `${scanStatus.civitai_progress.done} of ${scanStatus.civitai_progress.total}`
-                        : "No pending sync",
-                    },
-                  ].map((item) => (
-                    <div key={item.title} className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                      <div className="flex items-center justify-between text-sm text-stone-300">
-                        <span className="font-semibold text-white">{item.title}</span>
-                        <span>{item.label}</span>
-                      </div>
-                      <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/10">
-                        <div className="h-full rounded-full bg-white transition-all" style={{ width: `${item.progress}%` }} />
-                      </div>
+            {modalView === "scan-results" ? (
+              <div className="space-y-5 p-6">
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Generated image scan</p>
+                      <p className="mt-1 text-sm text-stone-400">
+                        Scan configured folders for generated PNG images with ComfyUI metadata.
+                      </p>
                     </div>
-                  ))}
+                      <button
+                        type="button"
+                        onClick={() => startResultsScan.mutate()}
+                        disabled={startResultsScan.isPending || saveSettings.isPending || resultsScanStatus?.status === "scanning"}
+                        className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                      >
+                        <Images className="h-4 w-4" />
+                      {resultsScanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between text-sm text-stone-300">
+                    <span className="font-semibold text-white">Results scan progress</span>
+                    <span>{resultsScanStatus?.status === "scanning" ? `${resultsScanStatus.done} of ${resultsScanStatus.total || "?"}` : "Idle"}</span>
+                  </div>
+                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-emerald-300 transition-all" style={{ width: `${resultsScanProgress}%` }} />
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-400">
+                    <span>{resultsScanStatus ? `${resultsScanStatus.linked} linked` : "0 linked"}</span>
+                    <span>{resultsScanStatus ? `${resultsScanStatus.unresolved_models} unresolved` : "0 unresolved"}</span>
+                    {resultsScanStatus?.current_file ? <span className="truncate">{resultsScanStatus.current_file}</span> : null}
+                  </div>
+                </div>
+
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div>
+                    <span className="block text-sm font-medium text-stone-100">Generated image scan paths</span>
+                    <span className="mt-1 block text-xs text-stone-400">
+                      Absolute folders scanned by the Results library.
+                    </span>
+                  </div>
+                  <div className="mt-4 flex gap-3">
+                      <input
+                        type="text"
+                        value={newGeneratedPath}
+                        onChange={(event) => {
+                          setScanPathsSavedAt(null);
+                          setNewGeneratedPath(event.target.value);
+                        }}
+                        placeholder="/absolute/path/to/outputs"
+                        className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-white/25"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const result = await directoryPicker.mutateAsync();
+                          if (result.status === "selected" && result.path) {
+                            const nextPaths = addUniquePath(generatedImageScanPaths, result.path);
+                            await persistGeneratedScanPaths(nextPaths);
+                            setNewGeneratedPath("");
+                          }
+                        }}
+                        disabled={directoryPicker.isPending || saveSettings.isPending}
+                        className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/10"
+                      >
+                        {directoryPicker.isPending ? "Selecting..." : "Select folder"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const value = newGeneratedPath.trim();
+                          if (!value) {
+                            return;
+                          }
+                          const nextPaths = addUniquePath(generatedImageScanPaths, value);
+                          await persistGeneratedScanPaths(nextPaths);
+                          setNewGeneratedPath("");
+                        }}
+                        disabled={saveSettings.isPending}
+                        className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/10"
+                      >
+                      Add
+                    </button>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    {generatedImageScanPaths.length === 0 ? (
+                      <p className="text-sm text-stone-500">No results scan paths configured.</p>
+                    ) : (
+                      generatedImageScanPaths.map((pathValue) => (
+                        <div key={pathValue} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-stone-200">
+                          <span className="truncate">{pathValue}</span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const nextPaths = generatedImageScanPaths.filter((item) => item !== pathValue);
+                              await persistGeneratedScanPaths(nextPaths);
+                            }}
+                            disabled={saveSettings.isPending}
+                            className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-semibold text-stone-300 transition hover:bg-white/10"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  {directoryPicker.isError ? (
+                    <p className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                      {directoryPicker.error.message}
+                    </p>
+                  ) : null}
+                  {saveSettings.isPending ? (
+                    <p className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-stone-300">
+                      Saving scan paths...
+                    </p>
+                  ) : null}
+                  {saveSettings.isError ? (
+                    <p className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                      {saveSettings.error.message}
+                    </p>
+                  ) : null}
+                  {!saveSettings.isPending && !saveSettings.isError && scanPathsSavedAt !== null ? (
+                    <p className="mt-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                      Scan paths saved.
+                    </p>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -870,6 +1368,118 @@ export default function App() {
                 ) : null}
               </div>
             ) : null}
+
+            {modalView === "image" && imageDetailQuery.data ? (
+              <div className="grid gap-6 p-6 lg:grid-cols-[1.15fr_0.85fr]">
+                <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex min-h-[26rem] items-center justify-center rounded-[1.2rem] border border-white/10 bg-black/25 p-4">
+                    {(imageDetailQuery.data.sources ?? []).some((source) => source.is_present) && !imagePreviewFailed ? (
+                      <img
+                        key={imageDetailQuery.data.preview_url}
+                        src={imageDetailQuery.data.preview_url}
+                        alt={imageDetailQuery.data.sha256}
+                        onError={() => setImagePreviewFailed(true)}
+                        className="max-h-[72vh] w-full rounded-[1rem] object-contain"
+                      />
+                    ) : (
+                      <div className="max-w-sm text-center text-sm text-stone-500">
+                        No preview source is currently available for this image.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-5">
+                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Sources</h3>
+                      <button
+                        type="button"
+                        onClick={() => revealImage.mutate(imageDetailQuery.data.id)}
+                        disabled={revealImage.isPending}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-stone-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        {revealImage.isPending ? "Opening..." : "Reveal in folder"}
+                      </button>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {(imageDetailQuery.data.sources ?? []).map((source) => (
+                        <div key={source.id} className="rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-stone-300">
+                          <div className="font-medium text-white">{source.filename}</div>
+                          <div className="mt-1 text-xs uppercase tracking-[0.18em] text-stone-500">
+                            {source.source_type === "upload" ? "Upload" : "Generated scan"}
+                          </div>
+                          {source.path ? <div className="mt-2 break-all text-xs text-stone-500">{source.path}</div> : null}
+                        </div>
+                      ))}
+                    </div>
+                    {revealImage.isError ? (
+                      <p className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                        {revealImage.error.message}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Linked models</h3>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {(imageDetailQuery.data.models ?? []).length > 0 ? (
+                        imageDetailQuery.data.models!.map((modelLink) => (
+                          <button
+                            key={`${modelLink.model_id}:${modelLink.relation_type}`}
+                            type="button"
+                            onClick={() => {
+                              setSelectedModelId(modelLink.model_id);
+                              setModelModalTab("gallery");
+                              setModalView("model");
+                            }}
+                            className="rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-200 transition hover:bg-white/10"
+                          >
+                            {modelLink.filename ?? modelLink.model_id}
+                          </button>
+                        ))
+                      ) : (
+                        <span className="text-sm text-stone-500">No linked local models.</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Tags</h3>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {(imageDetailQuery.data.tags ?? []).filter((tag) => tag.tag_type !== "prompt_term").map((tag) => (
+                        <span key={`${tag.tag_type}:${tag.tag}`} className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-stone-200">
+                          {tag.tag}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-5 space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => setShowImageMetadata((current) => !current)}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-stone-300 transition hover:bg-white/10"
+                      >
+                        {showImageMetadata ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        {showImageMetadata ? "Hide metadata" : "Show metadata"}
+                      </button>
+                      {showImageMetadata ? (
+                        <div className="max-h-80 overflow-y-auto overflow-x-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
+                          <pre className="whitespace-pre-wrap break-words text-xs leading-6 text-stone-300">
+                            {imageDetailQuery.data.prompt_text ??
+                              JSON.stringify(imageDetailQuery.data.metadata_json ?? {}, null, 2)}
+                          </pre>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-stone-500">
+                          Prompt and raw metadata stay collapsed by default to keep the dialog readable.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
           </div>
         </div>
       ) : null}

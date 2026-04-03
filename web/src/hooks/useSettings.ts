@@ -5,12 +5,14 @@ export interface SettingsResponse {
   civitai_api_key_configured: boolean;
   preview_cache_enabled: boolean;
   show_nsfw_previews: boolean;
+  generated_image_scan_paths: string[];
 }
 
 export interface SaveSettingsInput {
   civitai_api_key?: string;
   preview_cache_enabled: boolean;
   show_nsfw_previews: boolean;
+  generated_image_scan_paths: string[];
 }
 
 export interface SaveSettingsResponse {

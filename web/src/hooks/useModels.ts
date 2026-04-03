@@ -112,6 +112,7 @@ export function useModelImageUploadMutation(modelId: string | null) {
     mutationFn: (input: UploadModelImageInput) => uploadModelImage(modelId!, input),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.images });
       if (modelId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
       }
@@ -126,6 +127,7 @@ export function useModelPrimaryImageMutation(modelId: string | null) {
     mutationFn: (imageId: number) => setPrimaryModelImage(modelId!, imageId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.images });
       if (modelId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
       }
@@ -140,6 +142,7 @@ export function useModelImageDeleteMutation(modelId: string | null) {
     mutationFn: (imageId: number) => deleteModelImage(modelId!, imageId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.images });
       if (modelId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
       }

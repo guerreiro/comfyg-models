@@ -16,6 +16,7 @@ SETTINGS_FILENAME = "settings.json"
 DEFAULT_SETTINGS: dict[str, Any] = {
     "preview_cache_enabled": True,
     "show_nsfw_previews": False,
+    "generated_image_scan_paths": [],
 }
 
 
