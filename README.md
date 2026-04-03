@@ -1,16 +1,17 @@
 # comfyg-models
 
-`comfyg-models` is a ComfyUI plugin for managing local AI models through a dedicated web interface.
+`comfyg-models` is a ComfyUI plugin to manage local AI models and generated images through a dedicated web interface.
 
-It is designed to be more than a file list. The plugin aims to become the place where you keep context around your models: what they are, where they came from, how you use them, and what is worth remembering about each one.
+The plugin provides two main workspaces: **Library** for managing local models and **Results** for exploring generated images with ComfyUI metadata.
 
-## What It Does
+## What it does
 
-- Provides a dedicated page inside ComfyUI at `/comfyg-models`
+- Provides a dedicated page within ComfyUI at `/comfyg-models`
 - Organizes local model collections in one place
 - Connects local model files to CivitAI metadata
-- Stores plugin data outside the repository in the ComfyUI `user/` directory
-- Creates a foundation for personal notes, tags, reference images, favorite prompts, and usage history
+- Scans folders to find generated images with ComfyUI metadata
+- Stores plugin data in ComfyUI's `user/` directory
+- Allows uploading and organizing reference images for each model
 
 ## Supported Model Categories
 
@@ -23,16 +24,31 @@ It is designed to be more than a file list. The plugin aims to become the place 
 - CLIP
 - CLIP Vision
 
-## Current Features
+### Library (Models)
+- Local model list with preview
+- Set main image for each model
+- View model metadata
+- Automatically scan model folders
 
-- Custom plugin page served by ComfyUI
-- Settings screen
-- Secure CivitAI API key storage and verification
-- Local SQLite cache bootstrap
+### Results (Gallery)
+- Generated image gallery
+- Automatic scanning of configured folders
+- Automatic metadata extraction (prompt, workflow, models used)
+- Search by prompt, filename, or tags
+- Auto tags: model, LoRA, base model, prompt terms
+- Drag-and-drop image upload
+
+### Settings
+- CivitAI API key (stored securely)
+- Local cache preview
+
+### Images and Metadata
+- ComfyUI PNG metadata extraction (prompt, workflow, etc.)
+- Automatic identification of models and LoRAs used
 
 ## Access
 
-After installing the plugin in `ComfyUI/custom_nodes/comfyg-models`, open:
+After installing the plugin at `ComfyUI/custom_nodes/comfyg-models`, open:
 
 ```text
 http://127.0.0.1:8188/comfyg-models
@@ -40,7 +56,7 @@ http://127.0.0.1:8188/comfyg-models
 
 ## Runtime Data
 
-The plugin stores its runtime data in:
+The plugin stores runtime data in:
 
 ```text
 ComfyUI/user/comfyg-models/
@@ -48,12 +64,14 @@ ComfyUI/user/comfyg-models/
 
 This includes:
 
-- `cache.db`
-- `settings.json`
-- cached preview images
-- user reference images
+- `cache.db` - SQLite database with models, images, and settings
+- `settings.json` - Plugin settings
+- `user-images/` - Uploaded reference images
+- Cached preview images
 
 ## Notes
 
-- The CivitAI API key is never returned to the frontend
+- CivitAI API key is never returned to the frontend
 - Runtime data is intentionally kept outside the plugin folder
+- SQLite database enables efficient offline queries
+- Images are deduplicated via SHA256 to save space

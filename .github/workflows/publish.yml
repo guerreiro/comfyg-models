@@ -1,0 +1,18 @@
+name: Publish to ComfyUI Registry
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish to ComfyUI Registry
+        uses: comfy/node-publish@v1
+        with:
+          publisher_token: ${{ secrets.COMFY_PUBLISHER_TOKEN }}

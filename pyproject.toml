@@ -1,0 +1,21 @@
+[project]
+name = "comfyg-models"
+version = "1.0.0"
+description = "A ComfyUI plugin to manage local AI models and generated images through a dedicated web interface"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "blake3",
+    "aiosqlite",
+    "watchdog",
+]
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/guerreiro/comfyg-models"
+
+[tool.comfy]
+PublisherId = "guerreiro"
+DisplayName = "comfyg-models"

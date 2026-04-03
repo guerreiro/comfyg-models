@@ -11,6 +11,7 @@ from typing import Any
 from .database import (
     compute_sha256,
     get_models_index,
+    get_setting,
     link_image_to_model,
     mark_missing_scanned_sources,
     replace_image_filter_values,
@@ -20,7 +21,6 @@ from .database import (
 )
 from .image_metadata import extract_comfy_metadata
 from .image_indexing import build_filter_values, build_image_tags
-from .settings import load_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,8 +61,8 @@ RESULTS_SCAN_STATUS = ResultsScanStatus()
 _RESULTS_SCAN_TASK: asyncio.Task[None] | None = None
 
 
-def _normalize_scan_paths() -> list[Path]:
-    raw_paths = load_settings().get("generated_image_scan_paths", [])
+async def _normalize_scan_paths() -> list[Path]:
+    raw_paths = await get_setting("generated_image_scan_paths") or []
     normalized: list[Path] = []
     for raw_path in raw_paths:
         try:
@@ -77,9 +77,10 @@ def _normalize_scan_paths() -> list[Path]:
     return normalized
 
 
-def _discover_result_images() -> list[Path]:
+async def _discover_result_images() -> list[Path]:
+    scan_roots = await _normalize_scan_paths()
     discovered: list[Path] = []
-    for root in _normalize_scan_paths():
+    for root in scan_roots:
         if not root.exists():
             LOGGER.warning("Results scan root does not exist: %s", root)
             continue
@@ -154,10 +155,10 @@ async def start_results_scan_job() -> bool:
 
 async def _run_results_scan_job() -> None:
     try:
-        scan_roots = _normalize_scan_paths()
-        files = await asyncio.to_thread(_discover_result_images)
+        files = await _discover_result_images()
         RESULTS_SCAN_STATUS.total = len(files)
         local_models = await get_models_index()
+        scan_roots = await _normalize_scan_paths()
         seen_paths_by_root: dict[str, set[str]] = {root.as_posix(): set() for root in scan_roots}
 
         for index, file_path in enumerate(files, start=1):

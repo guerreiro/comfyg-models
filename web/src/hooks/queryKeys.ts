@@ -4,6 +4,7 @@ export const queryKeys = {
   modelDetail: (modelId: string) => ["models", modelId] as const,
   images: ["images"] as const,
   imageFilters: ["images", "filters"] as const,
+  allImageTags: ["images", "tags"] as const,
   imageDetail: (imageId: number) => ["images", imageId] as const,
   scanStatus: ["scan-status"] as const,
   scanStart: ["scan-start"] as const,

@@ -2,14 +2,14 @@ import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react
 import {
   ChevronDown,
   ChevronUp,
-  FolderOpen,
-  GalleryHorizontal,
-  Grip,
-  Images,
   Eye,
   EyeOff,
   Filter,
+  FolderOpen,
+  GalleryHorizontal,
+  Grip,
   ImagePlus,
+  Images,
   Link2,
   ScanSearch,
   Search,
@@ -28,7 +28,6 @@ import {
 } from "./hooks/useModels";
 import {
   useImageDetailQuery,
-  useImageFiltersQuery,
   useImagesQuery,
   useResultsImageUploadMutation,
   useRevealImageMutation,
@@ -37,7 +36,7 @@ import { useResultsScanStatusQuery, useStartResultsScanMutation } from "./hooks/
 import { useScanStatusQuery, useStartScanMutation } from "./hooks/useScan";
 import { useSaveSettingsMutation, useSettingsQuery } from "./hooks/useSettings";
 import type { CivitaiModelImage } from "./types/civitai";
-import type { GalleryImageFilters, ImageFilterBucketItem, Model, ModelFilters } from "./types/model";
+import type { GalleryImageFilters, Model, ModelFilters } from "./types/model";
 
 type ModalView = "none" | "scan-models" | "scan-results" | "settings" | "model" | "image";
 type ModelModalTab = "gallery" | "overview" | "civitai";
@@ -102,67 +101,6 @@ function addUniquePath(paths: string[], value: string): string[] {
   return Array.from(new Set([...paths, normalized]));
 }
 
-function getImageDisplayTitle(promptText: string | null, filename: string | null): string {
-  if (promptText?.trim()) {
-    return promptText;
-  }
-  if (filename?.trim()) {
-    return filename;
-  }
-  return "Generated image";
-}
-
-function FilterChipGroup({
-  label,
-  items,
-  selectedValue,
-  allLabel,
-  onSelect,
-}: {
-  label: string;
-  items: ImageFilterBucketItem[];
-  selectedValue: string;
-  allLabel: string;
-  onSelect: (value: string) => void;
-}) {
-  if (items.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">{label}</p>
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => onSelect("all")}
-          className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-            selectedValue === "all"
-              ? "bg-white text-stone-950"
-              : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
-          }`}
-        >
-          {allLabel}
-        </button>
-        {items.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            onClick={() => onSelect(item.value)}
-            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-              selectedValue === item.value
-                ? "bg-emerald-300 text-stone-950"
-                : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
-            }`}
-          >
-            {item.value} <span className="text-[10px] opacity-70">{item.count}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const settingsQuery = useSettingsQuery();
   const saveSettings = useSaveSettingsMutation();
@@ -192,11 +130,6 @@ export default function App() {
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [imagePendingDelete, setImagePendingDelete] = useState<number | null>(null);
   const [resultsSearch, setResultsSearch] = useState("");
-  const [resultsSourceType, setResultsSourceType] = useState<"all" | "upload" | "scanned_file">("all");
-  const [resultsMetadataFilter, setResultsMetadataFilter] = useState<"all" | "with" | "without">("all");
-  const [resultsModelRef, setResultsModelRef] = useState("all");
-  const [resultsLoraRef, setResultsLoraRef] = useState("all");
-  const [resultsBaseModelRef, setResultsBaseModelRef] = useState("all");
   const [scanPathsSavedAt, setScanPathsSavedAt] = useState<number | null>(null);
   const [resultsDropActive, setResultsDropActive] = useState(false);
   const [resultsUploadNotice, setResultsUploadNotice] = useState<string | null>(null);
@@ -218,17 +151,10 @@ export default function App() {
   const imageFilters = useMemo<GalleryImageFilters>(
     () => ({
       search: deferredResultsSearch.trim() || undefined,
-      model_ref: resultsModelRef === "all" ? undefined : resultsModelRef,
-      lora_ref: resultsLoraRef === "all" ? undefined : resultsLoraRef,
-      base_model: resultsBaseModelRef === "all" ? undefined : resultsBaseModelRef,
-      source_type: resultsSourceType === "all" ? undefined : resultsSourceType,
-      has_metadata:
-        resultsMetadataFilter === "all" ? undefined : resultsMetadataFilter === "with",
     }),
-    [deferredResultsSearch, resultsBaseModelRef, resultsLoraRef, resultsMetadataFilter, resultsModelRef, resultsSourceType],
+    [deferredResultsSearch],
   );
   const imagesQuery = useImagesQuery(imageFilters);
-  const imageFiltersQuery = useImageFiltersQuery(imageFilters);
 
   const selectedModel =
     modelsQuery.data?.items.find((item) => item.id === selectedModelId) ?? null;
@@ -343,7 +269,7 @@ export default function App() {
         <header className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
             <div className="space-y-4">
-              <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">comfyg-models</h1>
+              <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">Comfyg Models</h1>
               <div className="flex flex-wrap gap-2">
                 {[
                   { id: "library", label: "Library", icon: Sparkles },
@@ -458,44 +384,20 @@ export default function App() {
                 </button>
               </label>
             </section>
-          ) : (
-            <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr_0.8fr]">
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Search className="h-4 w-4 text-stone-500" />
-                <input
-                  type="text"
-                  value={resultsSearch}
-                  onChange={(event) => setResultsSearch(event.target.value)}
-                  placeholder="Search by prompt or filename"
-                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
-                />
-              </label>
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Images className="h-4 w-4 text-stone-500" />
-                <select
-                  value={resultsSourceType}
-                  onChange={(event) => setResultsSourceType(event.target.value as "all" | "upload" | "scanned_file")}
-                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
-                >
-                  <option value="all" className="bg-stone-950">All sources</option>
-                  <option value="upload" className="bg-stone-950">Uploads</option>
-                  <option value="scanned_file" className="bg-stone-950">Scanned</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Filter className="h-4 w-4 text-stone-500" />
-                <select
-                  value={resultsMetadataFilter}
-                  onChange={(event) => setResultsMetadataFilter(event.target.value as "all" | "with" | "without")}
-                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
-                >
-                  <option value="all" className="bg-stone-950">All metadata states</option>
-                  <option value="with" className="bg-stone-950">With metadata</option>
-                  <option value="without" className="bg-stone-950">Without metadata</option>
-                </select>
-              </label>
-            </section>
-          )}
+          ) : null}
+
+          {primaryView === "results" ? (
+            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
+              <Search className="h-4 w-4 text-stone-500" />
+              <input
+                type="text"
+                value={resultsSearch}
+                onChange={(event) => setResultsSearch(event.target.value)}
+                placeholder="Search by prompt, filename or tags..."
+                className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
+              />
+            </label>
+          ) : null}
         </header>
 
         {primaryView === "library" ? (
@@ -526,37 +428,6 @@ export default function App() {
             </button>
           ))}
         </section>
-        ) : null}
-
-        {primaryView === "results" &&
-        ((imageFiltersQuery.data?.model.length ?? 0) > 0 ||
-          (imageFiltersQuery.data?.lora.length ?? 0) > 0 ||
-          (imageFiltersQuery.data?.base_model.length ?? 0) > 0) ? (
-          <section className="space-y-4 rounded-[1.6rem] border border-white/10 bg-white/5 p-5">
-            <div className="grid gap-4 lg:grid-cols-3">
-              <FilterChipGroup
-                label="Models"
-                items={imageFiltersQuery.data?.model ?? []}
-                selectedValue={resultsModelRef}
-                allLabel="All models"
-                onSelect={setResultsModelRef}
-              />
-              <FilterChipGroup
-                label="LoRAs"
-                items={imageFiltersQuery.data?.lora ?? []}
-                selectedValue={resultsLoraRef}
-                allLabel="All LoRAs"
-                onSelect={setResultsLoraRef}
-              />
-              <FilterChipGroup
-                label="Base models"
-                items={imageFiltersQuery.data?.base_model ?? []}
-                selectedValue={resultsBaseModelRef}
-                allLabel="All base models"
-                onSelect={setResultsBaseModelRef}
-              />
-            </div>
-          </section>
         ) : null}
 
         {primaryView === "library" ? (
@@ -712,23 +583,11 @@ export default function App() {
                 className="group mb-5 block w-full break-inside-avoid overflow-hidden rounded-[1.7rem] border border-white/10 bg-white/5 text-left shadow-[0_18px_50px_rgba(0,0,0,0.20)] transition hover:-translate-y-1 hover:border-white/20 hover:bg-white/[0.08]"
               >
                 <div className="relative overflow-hidden bg-[linear-gradient(135deg,_#1c1d22,_#282a31_50%,_#1b1c20)]">
-                  <img src={image.preview_url} alt={image.sha256} className="h-auto w-full transition duration-500 group-hover:scale-[1.01]" />
+                  <img src={`${image.preview_url}?_t=${image.updated_at}`} alt={image.sha256} className="h-auto w-full transition duration-500 group-hover:scale-[1.01]" />
                   <div className="absolute left-3 top-3 flex gap-2">
                     {(image.sources ?? []).slice(0, 2).map((source) => (
                       <span key={source.id} className="rounded-full border border-white/10 bg-black/55 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur">
                         {source.source_type === "upload" ? "Upload" : "Generated"}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-3 p-4">
-                  <p className="line-clamp-2 text-sm text-stone-200">
-                    {getImageDisplayTitle(image.prompt_text, image.sources?.[0]?.filename ?? null)}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {(image.tags ?? []).filter((tag) => tag.tag_type !== "prompt_term").slice(0, 4).map((tag) => (
-                      <span key={`${tag.tag_type}:${tag.tag}`} className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[11px] text-stone-300">
-                        {tag.tag}
                       </span>
                     ))}
                   </div>
@@ -1375,8 +1234,8 @@ export default function App() {
                   <div className="flex min-h-[26rem] items-center justify-center rounded-[1.2rem] border border-white/10 bg-black/25 p-4">
                     {(imageDetailQuery.data.sources ?? []).some((source) => source.is_present) && !imagePreviewFailed ? (
                       <img
-                        key={imageDetailQuery.data.preview_url}
-                        src={imageDetailQuery.data.preview_url}
+                        key={`${imageDetailQuery.data.preview_url}_${imageDetailQuery.data.updated_at}`}
+                        src={`${imageDetailQuery.data.preview_url}?_t=${imageDetailQuery.data.updated_at}`}
                         alt={imageDetailQuery.data.sha256}
                         onError={() => setImagePreviewFailed(true)}
                         className="max-h-[72vh] w-full rounded-[1rem] object-contain"

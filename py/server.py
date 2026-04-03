@@ -16,6 +16,7 @@ from .database import (
     delete_model_user_image,
     delete_managed_image_source,
     get_image_detail,
+    get_all_image_tags,
     get_image_filter_buckets,
     get_model_detail,
     link_image_to_model,
@@ -34,6 +35,7 @@ from .image_indexing import build_filter_values, build_image_tags
 from .results_scanner import get_results_scan_status, start_results_scan_job
 from .scanner import get_scan_status, start_scan_job
 from .settings import ensure_data_dir, load_settings, redact_settings, save_settings
+from .database import get_setting, set_setting
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +68,12 @@ async def build_settings_response_payload() -> dict[str, Any]:
     """Return settings in the frontend-safe shape."""
     settings = load_settings()
     payload = redact_settings(settings)
+    
+    db_paths = await get_setting("generated_image_scan_paths")
+    if db_paths is None:
+        db_paths = []
+    payload["generated_image_scan_paths"] = db_paths
+    
     LOGGER.debug("Prepared redacted settings payload with keys: %s", ", ".join(sorted(payload.keys())))
     return payload
 
@@ -90,7 +98,7 @@ async def update_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 LOGGER.warning("Ignoring non-absolute generated image scan path %s", path)
                 continue
             normalized_paths.append(path.as_posix())
-        next_settings["generated_image_scan_paths"] = list(dict.fromkeys(normalized_paths))
+        await set_setting("generated_image_scan_paths", list(dict.fromkeys(normalized_paths)))
 
     civitai_username: str | None = None
     incoming_key = payload.get("civitai_api_key")
@@ -106,9 +114,12 @@ async def update_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             next_settings.pop("civitai_api_key", None)
 
     save_settings(next_settings)
+    db_paths = await get_setting("generated_image_scan_paths")
+    if db_paths is None:
+        db_paths = []
     response = {
         "ok": True,
-        "settings": redact_settings(next_settings),
+        "settings": redact_settings(next_settings) | {"generated_image_scan_paths": db_paths},
     }
     if civitai_username:
         response["civitai_username"] = civitai_username
@@ -144,6 +155,7 @@ def register_routes(routes: Any) -> None:
     routes.get(r"/comfyg-models/api/images/{image_id:\d+}/content")(get_image_content_handler)
     routes.post(r"/comfyg-models/api/images/{image_id:\d+}/reveal")(post_image_reveal_handler)
     routes.get("/comfyg-models/api/images/filters")(get_image_filters_handler)
+    routes.get("/comfyg-models/api/images/tags")(get_all_tags_handler)
     routes.get("/comfyg-models/api/images")(get_images_handler)
     routes.post("/comfyg-models/api/images")(post_image_ingest_handler)
     routes.post(r"/comfyg-models/api/models/{model_id:.+}/images")(post_model_image_handler)
@@ -370,19 +382,30 @@ async def get_model_detail_handler(request: Any) -> Any:
 
 async def get_images_handler(request: Any) -> Any:
     """Handle GET /comfyg-models/api/images."""
-    filters = {
-        "model_id": request.rel_url.query.get("model_id"),
-        "base_model": request.rel_url.query.get("base_model"),
-        "model_ref": request.rel_url.query.get("model_ref"),
-        "lora_ref": request.rel_url.query.get("lora_ref"),
-        "source_type": request.rel_url.query.get("source_type"),
-        "has_metadata": (
-            None
-            if request.rel_url.query.get("has_metadata") is None
-            else request.rel_url.query.get("has_metadata") == "true"
-        ),
-        "search": request.rel_url.query.get("search"),
-    }
+    query_params = request.rel_url.query
+    filters: dict[str, Any] = {}
+    
+    base_model_values = query_params.getall("base_model") if "base_model" in query_params else []
+    if base_model_values:
+        filters["base_model"] = base_model_values if len(base_model_values) > 1 else base_model_values[0]
+    
+    model_ref_values = query_params.getall("model_ref") if "model_ref" in query_params else []
+    if model_ref_values:
+        filters["model_ref"] = model_ref_values if len(model_ref_values) > 1 else model_ref_values[0]
+    
+    lora_ref_values = query_params.getall("lora_ref") if "lora_ref" in query_params else []
+    if lora_ref_values:
+        filters["lora_ref"] = lora_ref_values if len(lora_ref_values) > 1 else lora_ref_values[0]
+    
+    if query_params.get("model_id"):
+        filters["model_id"] = query_params.get("model_id")
+    if query_params.get("source_type"):
+        filters["source_type"] = query_params.get("source_type")
+    if query_params.get("has_metadata") is not None:
+        filters["has_metadata"] = query_params.get("has_metadata") == "true"
+    if query_params.get("search"):
+        filters["search"] = query_params.get("search")
+    
     try:
         items = await list_images(filters)
     except Exception:
@@ -393,25 +416,46 @@ async def get_images_handler(request: Any) -> Any:
 
 async def get_image_filters_handler(request: Any) -> Any:
     """Handle GET /comfyg-models/api/images/filters."""
-    filters = {
-        "model_id": request.rel_url.query.get("model_id"),
-        "base_model": request.rel_url.query.get("base_model"),
-        "model_ref": request.rel_url.query.get("model_ref"),
-        "lora_ref": request.rel_url.query.get("lora_ref"),
-        "source_type": request.rel_url.query.get("source_type"),
-        "has_metadata": (
-            None
-            if request.rel_url.query.get("has_metadata") is None
-            else request.rel_url.query.get("has_metadata") == "true"
-        ),
-        "search": request.rel_url.query.get("search"),
-    }
+    query_params = request.rel_url.query
+    filters: dict[str, Any] = {}
+    
+    base_model_values = query_params.getall("base_model") if "base_model" in query_params else []
+    if base_model_values:
+        filters["base_model"] = base_model_values if len(base_model_values) > 1 else base_model_values[0]
+    
+    model_ref_values = query_params.getall("model_ref") if "model_ref" in query_params else []
+    if model_ref_values:
+        filters["model_ref"] = model_ref_values if len(model_ref_values) > 1 else model_ref_values[0]
+    
+    lora_ref_values = query_params.getall("lora_ref") if "lora_ref" in query_params else []
+    if lora_ref_values:
+        filters["lora_ref"] = lora_ref_values if len(lora_ref_values) > 1 else lora_ref_values[0]
+    
+    if query_params.get("model_id"):
+        filters["model_id"] = query_params.get("model_id")
+    if query_params.get("source_type"):
+        filters["source_type"] = query_params.get("source_type")
+    if query_params.get("has_metadata") is not None:
+        filters["has_metadata"] = query_params.get("has_metadata") == "true"
+    if query_params.get("search"):
+        filters["search"] = query_params.get("search")
+    
     try:
         buckets = await get_image_filter_buckets(filters)
     except Exception:
         LOGGER.exception("Failed to load image filter buckets")
         return _json_response(error_payload("Failed to load image filters", "IMAGE_FILTERS_ERROR"), status=500)
     return _json_response(buckets)
+
+
+async def get_all_tags_handler(request: Any) -> Any:
+    """Handle GET /comfyg-models/api/images/tags."""
+    try:
+        tags = await get_all_image_tags()
+    except Exception:
+        LOGGER.exception("Failed to load all image tags")
+        return _json_response(error_payload("Failed to load tags", "TAGS_LOAD_ERROR"), status=500)
+    return _json_response({"tags": tags})
 
 
 async def get_image_detail_handler(request: Any) -> Any:
@@ -443,7 +487,21 @@ async def get_image_content_handler(request: Any) -> Any:
     for source in image.get("sources", []):
         path = source.get("path")
         if source.get("is_present") and isinstance(path, str) and Path(path).exists():
-            return web.FileResponse(Path(path))
+            file_path = Path(path)
+            content_type = "image/png"
+            if file_path.suffix.lower() in {".jpg", ".jpeg"}:
+                content_type = "image/jpeg"
+            elif file_path.suffix.lower() == ".webp":
+                content_type = "image/webp"
+            
+            with file_path.open("rb") as f:
+                body = f.read()
+            
+            response = web.Response(body=body, content_type=content_type)
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
 
     return _json_response(error_payload("No present source found for image", "IMAGE_SOURCE_MISSING"), status=404)
 
@@ -717,7 +775,22 @@ async def get_user_image_handler(request: Any) -> Any:
     image_path = _user_images_dir() / filename
     if not image_path.exists():
         return _json_response(error_payload("Image not found", "IMAGE_NOT_FOUND"), status=404)
-    return web.FileResponse(image_path)
+    
+    file_path = image_path
+    content_type = "image/png"
+    if file_path.suffix.lower() in {".jpg", ".jpeg"}:
+        content_type = "image/jpeg"
+    elif file_path.suffix.lower() == ".webp":
+        content_type = "image/webp"
+    
+    with file_path.open("rb") as f:
+        body = f.read()
+    
+    response = web.Response(body=body, content_type=content_type)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 async def put_model_primary_image_handler(request: Any) -> Any:

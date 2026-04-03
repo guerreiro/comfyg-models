@@ -462,9 +462,28 @@ def _parse_image_payload(row: dict[str, Any]) -> dict[str, Any]:
                 parsed[key] = None
         elif value is None and key in {"models", "tags", "sources"}:
             parsed[key] = []
+
+    for json_key in ("workflow_json", "metadata_json"):
+        if parsed.get(json_key) is not None:
+            parsed[json_key] = _sanitize_json_values(parsed[json_key])
+
     if parsed.get("id") is not None:
         parsed["preview_url"] = f"/comfyg-models/api/images/{parsed['id']}/content"
     return parsed
+
+
+def _sanitize_json_values(obj: Any) -> Any:
+    """Recursively replace non-serializable values (NaN, Inf) with null."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_json_values(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_json_values(item) for item in obj]
+    elif isinstance(obj, float):
+        import math
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    return obj
 
 
 def _build_image_where_clause(filters: dict[str, Any], *, image_alias: str = "i") -> tuple[str, list[Any]]:
@@ -487,27 +506,51 @@ def _build_image_where_clause(filters: dict[str, Any], *, image_alias: str = "i"
         clauses.append(f"{image_alias}.has_comfy_metadata = ?")
         params.append(1 if filters["has_metadata"] else 0)
     if filters.get("base_model"):
-        clauses.append(
-            f"EXISTS (SELECT 1 FROM image_filter_values ifv_base WHERE ifv_base.image_id = {image_alias}.id AND ifv_base.filter_type = 'base_model' AND ifv_base.filter_value = ?)"
-        )
-        params.append(filters["base_model"])
+        base_model_value = filters["base_model"]
+        if isinstance(base_model_value, list):
+            placeholders = ", ".join("?" * len(base_model_value))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_base WHERE ifv_base.image_id = {image_alias}.id AND ifv_base.filter_type = 'base_model' AND ifv_base.filter_value IN ({placeholders}))"
+            )
+            params.extend(base_model_value)
+        else:
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_base WHERE ifv_base.image_id = {image_alias}.id AND ifv_base.filter_type = 'base_model' AND ifv_base.filter_value = ?)"
+            )
+            params.append(base_model_value)
     if filters.get("model_ref"):
-        clauses.append(
-            f"EXISTS (SELECT 1 FROM image_filter_values ifv_model WHERE ifv_model.image_id = {image_alias}.id AND ifv_model.filter_type = 'model' AND ifv_model.filter_value = ?)"
-        )
-        params.append(filters["model_ref"])
+        model_ref_value = filters["model_ref"]
+        if isinstance(model_ref_value, list):
+            placeholders = ", ".join("?" * len(model_ref_value))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_model WHERE ifv_model.image_id = {image_alias}.id AND ifv_model.filter_type = 'model' AND ifv_model.filter_value IN ({placeholders}))"
+            )
+            params.extend(model_ref_value)
+        else:
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_model WHERE ifv_model.image_id = {image_alias}.id AND ifv_model.filter_type = 'model' AND ifv_model.filter_value = ?)"
+            )
+            params.append(model_ref_value)
     if filters.get("lora_ref"):
-        clauses.append(
-            f"EXISTS (SELECT 1 FROM image_filter_values ifv_lora WHERE ifv_lora.image_id = {image_alias}.id AND ifv_lora.filter_type = 'lora' AND ifv_lora.filter_value = ?)"
-        )
-        params.append(filters["lora_ref"])
+        lora_ref_value = filters["lora_ref"]
+        if isinstance(lora_ref_value, list):
+            placeholders = ", ".join("?" * len(lora_ref_value))
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_lora WHERE ifv_lora.image_id = {image_alias}.id AND ifv_lora.filter_type = 'lora' AND ifv_lora.filter_value IN ({placeholders}))"
+            )
+            params.extend(lora_ref_value)
+        else:
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM image_filter_values ifv_lora WHERE ifv_lora.image_id = {image_alias}.id AND ifv_lora.filter_type = 'lora' AND ifv_lora.filter_value = ?)"
+            )
+            params.append(lora_ref_value)
     if filters.get("search"):
         search_value = f"%{str(filters['search']).lower()}%"
         clauses.append(
             f"""(
                 LOWER(COALESCE({image_alias}.prompt_text, '')) LIKE ?
                 OR EXISTS (SELECT 1 FROM image_sources srcs WHERE srcs.image_id = {image_alias}.id AND srcs.is_present = 1 AND LOWER(srcs.filename) LIKE ?)
-                OR EXISTS (SELECT 1 FROM image_tags its WHERE its.image_id = {image_alias}.id AND its.tag_type = 'prompt_term' AND LOWER(its.tag) LIKE ?)
+                OR EXISTS (SELECT 1 FROM image_tags its WHERE its.image_id = {image_alias}.id AND LOWER(its.tag) LIKE ?)
                 OR EXISTS (SELECT 1 FROM image_filter_values ifvs WHERE ifvs.image_id = {image_alias}.id AND LOWER(ifvs.filter_value) LIKE ?)
             )"""
         )
@@ -1127,6 +1170,16 @@ async def get_image_filter_buckets(filters: dict[str, Any] | None = None) -> dic
     return buckets
 
 
+async def get_all_image_tags() -> list[str]:
+    """Return all unique tag values from image_tags for the tag filter UI."""
+    rows = await fetch_all("""
+        SELECT DISTINCT tag FROM image_tags 
+        WHERE tag IS NOT NULL AND tag != ''
+        ORDER BY tag ASC
+    """)
+    return [str(row["tag"]) for row in rows]
+
+
 async def mark_missing_scanned_sources(scan_root: str, seen_paths: set[str]) -> None:
     """Mark scanned file sources as missing if they were not seen in the latest scan."""
     params: list[Any] = [scan_root]
@@ -1219,3 +1272,33 @@ async def delete_managed_image_source(model_id: str, image_id: int) -> dict[str,
                 )
         await connection.commit()
     return source
+
+
+async def get_setting(key: str) -> Any | None:
+    """Get a setting value from the database."""
+    async with connection_context() as connection:
+        async with connection.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            value = row[0]
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return value
+            return value
+
+
+async def set_setting(key: str, value: Any) -> None:
+    """Set a setting value in the database."""
+    serialized = json.dumps(value, ensure_ascii=True) if value is not None else None
+    async with connection_context() as connection:
+        await connection.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, serialized),
+        )
+        await connection.commit()

@@ -30,13 +30,28 @@ function buildImagesUrl(filters: GalleryImageFilters): string {
     params.set("model_id", filters.model_id);
   }
   if (filters.base_model) {
-    params.set("base_model", filters.base_model);
+    const baseModel = filters.base_model;
+    if (Array.isArray(baseModel)) {
+      baseModel.forEach((v) => params.append("base_model", v));
+    } else {
+      params.set("base_model", baseModel);
+    }
   }
   if (filters.model_ref) {
-    params.set("model_ref", filters.model_ref);
+    const modelRef = filters.model_ref;
+    if (Array.isArray(modelRef)) {
+      modelRef.forEach((v) => params.append("model_ref", v));
+    } else {
+      params.set("model_ref", modelRef);
+    }
   }
   if (filters.lora_ref) {
-    params.set("lora_ref", filters.lora_ref);
+    const loraRef = filters.lora_ref;
+    if (Array.isArray(loraRef)) {
+      loraRef.forEach((v) => params.append("lora_ref", v));
+    } else {
+      params.set("lora_ref", loraRef);
+    }
   }
   if (filters.source_type) {
     params.set("source_type", filters.source_type);
@@ -95,6 +110,18 @@ export function useImageFiltersQuery(filters: GalleryImageFilters) {
   return useQuery({
     queryKey: [...queryKeys.imageFilters, filters],
     queryFn: () => fetchImageFilters(filters),
+  });
+}
+
+async function fetchAllImageTags(): Promise<string[]> {
+  const response = await fetch("/comfyg-models/api/images/tags");
+  return parseResponse<{ tags: string[] }>(response).then((data) => data.tags);
+}
+
+export function useAllImageTagsQuery() {
+  return useQuery({
+    queryKey: queryKeys.allImageTags,
+    queryFn: fetchAllImageTags,
   });
 }
 

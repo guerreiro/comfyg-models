@@ -128,9 +128,9 @@ export interface ImageFilterBuckets {
 
 export interface GalleryImageFilters {
   model_id?: string;
-  base_model?: string;
-  model_ref?: string;
-  lora_ref?: string;
+  base_model?: string | string[];
+  model_ref?: string | string[];
+  lora_ref?: string | string[];
   source_type?: "upload" | "scanned_file";
   has_metadata?: boolean;
   search?: string;
