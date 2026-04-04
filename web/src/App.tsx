@@ -135,6 +135,10 @@ export default function App() {
   const [resultsUploadNotice, setResultsUploadNotice] = useState<string | null>(null);
   const [showImageMetadata, setShowImageMetadata] = useState(false);
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
+  const [modelPage, setModelPage] = useState(1);
+  const [modelLimit, setModelLimit] = useState(50);
+  const [imagePage, setImagePage] = useState(1);
+  const [imageLimit, setImageLimit] = useState(50);
   const deferredSearch = useDeferredValue(search);
   const deferredResultsSearch = useDeferredValue(resultsSearch);
   const queryFilters = useMemo<ModelFilters>(
@@ -144,15 +148,19 @@ export default function App() {
       base_model: baseModelFilter === "all" ? undefined : [baseModelFilter],
       sort,
       sort_dir: sortDir,
+      page: modelPage,
+      limit: modelLimit,
     }),
-    [deferredSearch, typeFilter, baseModelFilter, sort, sortDir],
+    [deferredSearch, typeFilter, baseModelFilter, sort, sortDir, modelPage, modelLimit],
   );
   const modelsQuery = useModelsQuery(queryFilters);
   const imageFilters = useMemo<GalleryImageFilters>(
     () => ({
       search: deferredResultsSearch.trim() || undefined,
+      page: imagePage,
+      limit: imageLimit,
     }),
-    [deferredResultsSearch],
+    [deferredResultsSearch, imagePage, imageLimit],
   );
   const imagesQuery = useImagesQuery(imageFilters);
 
@@ -504,6 +512,25 @@ export default function App() {
               </button>
             );
           })}
+
+          {modelsQuery.data && modelsQuery.data.total > 0 ? (
+            <div className="col-span-full mt-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-black/20 p-4">
+              <span className="text-sm text-stone-400">
+                Showing {Math.min(filteredModels.length, modelLimit)} of {modelsQuery.data.total} models
+              </span>
+              <div className="flex items-center gap-2">
+                 <button disabled={modelPage <= 1} onClick={() => setModelPage(p => p - 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Prev</button>
+                 <span className="text-sm text-stone-400">Page {modelPage}</span>
+                 <button disabled={filteredModels.length < modelLimit} onClick={() => setModelPage(p => p + 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Next</button>
+              </div>
+              <select value={modelLimit} onChange={(e) => { setModelLimit(Number(e.target.value)); setModelPage(1); }} className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-sm text-white">
+                <option value={20} className="bg-stone-900">20 per page</option>
+                <option value={50} className="bg-stone-900">50 per page</option>
+                <option value={100} className="bg-stone-900">100 per page</option>
+              </select>
+            </div>
+          ) : null}
+
         </section>
         ) : (
         <section
@@ -595,6 +622,24 @@ export default function App() {
               </button>
             ))}
           </div>
+
+            {imagesQuery.data && imagesQuery.data.total > 0 ? (
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-black/20 p-4 break-inside-avoid">
+                <span className="text-sm text-stone-400">
+                  Showing {Math.min(imagesQuery.data.items.length, imageLimit)} of {imagesQuery.data.total} images
+                </span>
+                <div className="flex items-center gap-2">
+                   <button disabled={imagePage <= 1} onClick={() => setImagePage(p => p - 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Prev</button>
+                   <span className="text-sm text-stone-400">Page {imagePage}</span>
+                   <button disabled={imagesQuery.data.items.length < imageLimit} onClick={() => setImagePage(p => p + 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Next</button>
+                </div>
+                <select value={imageLimit} onChange={(e) => { setImageLimit(Number(e.target.value)); setImagePage(1); }} className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-sm text-white">
+                  <option value={20} className="bg-stone-900">20 per page</option>
+                  <option value={50} className="bg-stone-900">50 per page</option>
+                  <option value={100} className="bg-stone-900">100 per page</option>
+                </select>
+              </div>
+            ) : null}
         </section>
         )}
       </div>

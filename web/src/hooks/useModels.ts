@@ -9,6 +9,7 @@ interface ErrorPayload {
 interface ModelsResponse {
   items: Model[];
   count: number;
+  total: number;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -40,6 +41,8 @@ function buildModelsUrl(filters: ModelFilters): string {
   if (filters.sort_dir) {
     params.set("sort_dir", filters.sort_dir);
   }
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.limit) params.set("limit", String(filters.limit));
 
   const query = params.toString();
   return `/comfyg-models/api/models${query ? `?${query}` : ""}`;

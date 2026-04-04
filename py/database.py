@@ -18,8 +18,8 @@ LOGGER = logging.getLogger(__name__)
 SCHEMA_VERSION = 4
 DB_FILENAME = "cache.db"
 
-SCHEMA_STATEMENTS = """
-CREATE TABLE IF NOT EXISTS models (
+
+MODELS_SCHEMA_STATEMENTS = """CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     directory TEXT NOT NULL,
@@ -82,12 +82,11 @@ CREATE TABLE IF NOT EXISTS civitai_previews (
     PRIMARY KEY (model_id, url)
 );
 
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value JSON
-);
+CREATE INDEX IF NOT EXISTS idx_models_type ON models(type);
+CREATE INDEX IF NOT EXISTS idx_models_civitai ON models(civitai_model_id);
+CREATE INDEX IF NOT EXISTS idx_model_tags_tag ON model_tags(tag);"""
 
-CREATE TABLE IF NOT EXISTS images (
+IMAGES_SCHEMA_STATEMENTS = """CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sha256 TEXT NOT NULL UNIQUE,
     width INTEGER,
@@ -118,7 +117,7 @@ CREATE TABLE IF NOT EXISTS image_sources (
 );
 
 CREATE TABLE IF NOT EXISTS model_image_links (
-    model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL,
     image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
     relation_type TEXT NOT NULL,
     is_primary INTEGER NOT NULL DEFAULT 0,
@@ -140,9 +139,6 @@ CREATE TABLE IF NOT EXISTS image_filter_values (
     PRIMARY KEY (image_id, filter_type, filter_value)
 );
 
-CREATE INDEX IF NOT EXISTS idx_models_type ON models(type);
-CREATE INDEX IF NOT EXISTS idx_models_civitai ON models(civitai_model_id);
-CREATE INDEX IF NOT EXISTS idx_model_tags_tag ON model_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_images_sha256 ON images(sha256);
 CREATE INDEX IF NOT EXISTS idx_image_sources_image ON image_sources(image_id);
 CREATE INDEX IF NOT EXISTS idx_image_sources_type ON image_sources(source_type);
@@ -151,22 +147,36 @@ CREATE INDEX IF NOT EXISTS idx_model_image_links_model ON model_image_links(mode
 CREATE INDEX IF NOT EXISTS idx_model_image_links_image ON model_image_links(image_id);
 CREATE INDEX IF NOT EXISTS idx_image_tags_tag ON image_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_image_filter_values_type ON image_filter_values(filter_type);
-CREATE INDEX IF NOT EXISTS idx_image_filter_values_value ON image_filter_values(filter_value);
-"""
+CREATE INDEX IF NOT EXISTS idx_image_filter_values_value ON image_filter_values(filter_value);"""
 
 IMAGE_HASH_CHUNK_SIZE = 8 * 1024 * 1024
 
 
-def get_db_path() -> Path:
-    """Return the SQLite database path."""
-    return get_data_dir() / DB_FILENAME
+def get_models_db_path() -> Path:
+    """Return the models SQLite database path."""
+    return get_data_dir() / "models.db"
+
+
+def get_images_db_path() -> Path:
+    """Return the images SQLite database path."""
+    return get_data_dir() / "images.db"
 
 
 async def get_connection() -> aiosqlite.Connection:
-    """Create a reusable aiosqlite connection with the expected pragmas."""
-    connection = await aiosqlite.connect(get_db_path())
+    """Create a reusable aiosqlite connection with attached images db."""
+    models_path = get_models_db_path()
+    images_path = get_images_db_path()
+    
+    connection = await aiosqlite.connect(models_path)
     connection.row_factory = aiosqlite.Row
     await connection.execute("PRAGMA foreign_keys = ON")
+    
+    # Ensure images.db exists before attaching
+    if not images_path.exists():
+        async with aiosqlite.connect(images_path) as temp_conn:
+            await temp_conn.execute("PRAGMA user_version = 0")
+            
+    await connection.execute(f"ATTACH DATABASE '{images_path}' AS images_db")
     return connection
 
 
@@ -181,72 +191,44 @@ async def connection_context() -> AsyncIterator[aiosqlite.Connection]:
 
 
 async def init_db() -> None:
-    """Initialize the SQLite database and apply migrations."""
+    """Initialize the SQLite databases and apply migrations."""
     ensure_data_dir()
-    db_path = get_db_path()
-    LOGGER.info("Initializing SQLite database at %s", db_path)
-
-    async with connection_context() as connection:
+    
+    # 1) Initialize Models DB
+    async with aiosqlite.connect(get_models_db_path()) as connection:
+        await connection.execute("PRAGMA foreign_keys = ON")
         async with connection.execute("PRAGMA user_version") as cursor:
             row = await cursor.fetchone()
-        user_version = int(row[0] if row is not None else 0)
-        LOGGER.debug("Current database schema version is %s", user_version)
-
-        if user_version > SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Database schema version {user_version} is newer than supported version {SCHEMA_VERSION}"
-            )
-
-        if user_version < 1:
-            LOGGER.info("Applying schema version 1")
-            await connection.executescript(SCHEMA_STATEMENTS)
-            user_version = 1
-        else:
-            await connection.executescript(SCHEMA_STATEMENTS)
-
-        if user_version < 2:
-            LOGGER.info("Applying schema version 2")
-            columns: list[str] = []
-            async with connection.execute("PRAGMA table_info(model_user_images)") as cursor:
-                rows = await cursor.fetchall()
-                columns = [str(row[1]) for row in rows]
-            if "is_primary" not in columns:
-                await connection.execute(
-                    "ALTER TABLE model_user_images ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0"
-                )
-                await connection.execute(
-                    """
-                    UPDATE model_user_images
-                    SET is_primary = 1
-                    WHERE id IN (
-                        SELECT id
-                        FROM model_user_images latest
-                        WHERE latest.id = (
-                            SELECT inner_img.id
-                            FROM model_user_images inner_img
-                            WHERE inner_img.model_id = latest.model_id
-                            ORDER BY inner_img.created_at DESC, inner_img.id DESC
-                            LIMIT 1
-                        )
-                    )
-                    """
-                )
-            user_version = 2
-
-        if user_version < 3:
-            LOGGER.info("Applying schema version 3")
-            await connection.executescript(SCHEMA_STATEMENTS)
-            user_version = 3
-
-        if user_version < 4:
-            LOGGER.info("Applying schema version 4")
-            await connection.executescript(SCHEMA_STATEMENTS)
-            user_version = 4
-
-        await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-
+            user_version = int(row[0] if row is not None else 0)
+        
+        if user_version < SCHEMA_VERSION:
+            await connection.executescript(MODELS_SCHEMA_STATEMENTS)
+            
+            if user_version < 2:
+                # Same migration logic as old
+                columns: list[str] = []
+                async with connection.execute("PRAGMA table_info(model_user_images)") as cursor:
+                    rows = await cursor.fetchall()
+                    columns = [str(row[1]) for row in rows]
+                if "is_primary" not in columns:
+                    await connection.execute("ALTER TABLE model_user_images ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
+                
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()
-        LOGGER.info("Database initialization finished with schema version %s", SCHEMA_VERSION)
+
+    # 2) Initialize Images DB
+    async with aiosqlite.connect(get_images_db_path()) as connection:
+        await connection.execute("PRAGMA foreign_keys = ON")
+        async with connection.execute("PRAGMA user_version") as cursor:
+            row = await cursor.fetchone()
+            user_version = int(row[0] if row is not None else 0)
+            
+        if user_version < SCHEMA_VERSION:
+            await connection.executescript(IMAGES_SCHEMA_STATEMENTS)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        await connection.commit()
+        
+    LOGGER.info("Database initialization finished with schema version %s", SCHEMA_VERSION)
 
 
 async def execute(query: str, params: Sequence[Any] | None = None) -> None:
@@ -559,13 +541,24 @@ def _build_image_where_clause(filters: dict[str, Any], *, image_alias: str = "i"
     return f"WHERE {' AND '.join(clauses)}", params
 
 
+
 async def list_models(filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Return models enriched with note, tags, and rating."""
+    """Return models enriched with note, tags, and rating (paginated)."""
     filters = filters or {}
     where_clause, params = _build_models_where_clause(filters)
     order_clause = _models_order_by(filters.get("sort"), filters.get("sort_dir"))
+    
+    limit = int(filters.get("limit", 100))
+    offset = int(filters.get("offset", 0))
 
     query = f"""
+    WITH paginated_models AS (
+        SELECT m.id
+        FROM models m
+        {where_clause}
+        {order_clause}
+        LIMIT ? OFFSET ?
+    )
     SELECT
         m.id,
         m.filename,
@@ -595,17 +588,25 @@ async def list_models(filters: dict[str, Any] | None = None) -> list[dict[str, A
         note.note AS note,
         rating.rating AS rating,
         COALESCE(json_group_array(DISTINCT tags.tag) FILTER (WHERE tags.tag IS NOT NULL), '[]') AS tags
-    FROM models m
+    FROM paginated_models pm
+    JOIN models m ON m.id = pm.id
     LEFT JOIN model_notes note ON note.model_id = m.id
     LEFT JOIN model_ratings rating ON rating.model_id = m.id
     LEFT JOIN model_tags tags ON tags.model_id = m.id
-    {where_clause}
     GROUP BY m.id, note.note, rating.rating
     {order_clause}
     """
 
-    rows = await fetch_all(query, params)
+    rows = await fetch_all(query, params + [limit, offset])
     return [_parse_model_row(row) for row in rows]
+
+async def count_models(filters: dict[str, Any] | None = None) -> int:
+    """Return the total count of models matching the filters."""
+    filters = filters or {}
+    where_clause, params = _build_models_where_clause(filters)
+    query = f"SELECT count(1) AS c FROM models m {where_clause}"
+    row = await fetch_one(query, params)
+    return int(row["c"]) if row else 0
 
 
 async def get_model_detail(model_id: str) -> dict[str, Any] | None:
@@ -998,11 +999,23 @@ async def list_images_for_model(model_id: str, source_kind: str | None = None) -
     return [_parse_image_payload(row) for row in rows]
 
 
+
 async def list_images(filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Return canonical images for the Results library."""
+    """Return canonical images for the Results library (paginated)."""
     filters = filters or {}
     where_clause, params = _build_image_where_clause(filters)
+    
+    limit = int(filters.get("limit", 100))
+    offset = int(filters.get("offset", 0))
+    
     query = f"""
+    WITH paginated_images AS (
+        SELECT id
+        FROM images i
+        {where_clause}
+        ORDER BY i.updated_at DESC, i.id DESC
+        LIMIT ? OFFSET ?
+    )
     SELECT
         i.id,
         i.sha256,
@@ -1048,17 +1061,25 @@ async def list_images(filters: dict[str, Any] | None = None) -> list[dict[str, A
             )) FILTER (WHERE it.tag IS NOT NULL),
             '[]'
         ) AS tags
-    FROM images i
+    FROM paginated_images pi
+    JOIN images i ON i.id = pi.id
     LEFT JOIN image_sources src ON src.image_id = i.id AND src.is_present = 1
     LEFT JOIN model_image_links mil ON mil.image_id = i.id
     LEFT JOIN models m ON m.id = mil.model_id
     LEFT JOIN image_tags it ON it.image_id = i.id
-    {where_clause}
     GROUP BY i.id
     ORDER BY i.updated_at DESC, i.id DESC
     """
-    rows = await fetch_all(query, params)
+    rows = await fetch_all(query, params + [limit, offset])
     return [_parse_image_payload(row) for row in rows]
+
+async def count_images(filters: dict[str, Any] | None = None) -> int:
+    """Return the total count of images matching the filters."""
+    filters = filters or {}
+    where_clause, params = _build_image_where_clause(filters)
+    query = f"SELECT count(1) AS c FROM images i {where_clause}"
+    row = await fetch_one(query, params)
+    return int(row["c"]) if row else 0
 
 
 async def get_image_detail(image_id: int) -> dict[str, Any] | None:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable
 
 from .py.database import init_db
+from .py.worker import worker_loop
 from .py.server import register_routes
 from .py.settings import ensure_data_dir, get_data_dir
 
@@ -67,6 +68,7 @@ def _startup() -> None:
     LOGGER.info("Runtime data directory ready at %s", DATA_DIR)
     _register_static_routes()
     _run_async_task(init_db())
+    _run_async_task(worker_loop())
 
 
 _startup()

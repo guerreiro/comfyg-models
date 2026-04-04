@@ -174,9 +174,9 @@ async def _run_scan_job() -> None:
             SCAN_STATUS.done = index
 
         SCAN_STATUS.current_directory = None
-        await _run_hashing_job()
-        await _run_civitai_sync_job()
-        SCAN_STATUS.status = "idle"
+        from .worker import wake_worker
+        wake_worker()
+                SCAN_STATUS.status = "idle"
         SCAN_STATUS.current_hash_file = None
         SCAN_STATUS.current_civitai_model = None
         LOGGER.info("Background model scan finished successfully")
@@ -189,96 +189,17 @@ async def _run_scan_job() -> None:
         SCAN_STATUS.current_civitai_model = None
 
 
-async def _run_hashing_job() -> None:
-    """Hash models lazily after the scan has populated the database."""
-    models = await list_models_missing_hashes()
-    SCAN_STATUS.hashing_total = len(models)
-    SCAN_STATUS.hashing_done = 0
-
-    if not models:
-        LOGGER.info("No models require hashing after scan")
-        return
-
-    LOGGER.info("Starting lazy hashing for %s models", len(models))
-    for index, model in enumerate(models, start=1):
-        model_path = Path(model["directory"]) / model["filename"]
-        SCAN_STATUS.current_hash_file = model_path.as_posix()
-        LOGGER.info("Hashing model %s (%s/%s)", model_path, index, len(models))
-
-        if not model_path.exists():
-            LOGGER.warning("Skipping hash for missing file %s", model_path)
-            SCAN_STATUS.hashing_done = index
-            continue
-
-        hashes = await asyncio.to_thread(hash_file, model_path)
-        await update_model_hashes(
-            model_id=str(model["id"]),
-            sha256=str(hashes["sha256"]) if hashes["sha256"] else None,
-            blake3=str(hashes["blake3"]) if hashes["blake3"] else None,
-        )
-        SCAN_STATUS.hashing_done = index
-        LOGGER.info("Stored hashes for %s", model_path)
-
-    LOGGER.info("Lazy hashing finished successfully")
-
-
-async def _run_civitai_sync_job() -> None:
-    """Look up hashed models on CivitAI after hashing completes."""
-    models = await list_models_pending_civitai_sync()
-    SCAN_STATUS.civitai_total = len(models)
-    SCAN_STATUS.civitai_done = 0
-
-    if not models:
-        LOGGER.info("No models require CivitAI sync after hashing")
-        return
-
-    api_key = load_settings().get("civitai_api_key")
-    LOGGER.info("Starting CivitAI sync for %s models", len(models))
-
-    for index, model in enumerate(models, start=1):
-        SCAN_STATUS.current_civitai_model = str(model["filename"])
-        algorithm, hash_value = preferred_hash(
-            {
-                "sha256": model.get("sha256"),
-                "blake3": model.get("blake3"),
-            }
-        )
-        LOGGER.info(
-            "Looking up model %s on CivitAI using %s hash (%s/%s)",
-            model["filename"],
-            algorithm,
-            index,
-            len(models),
-        )
-
-        payload = await lookup_by_hash(hash_value, algorithm, api_key=api_key)
-        if payload is None:
-            await update_model_civitai_match(
-                model_id=str(model["id"]),
-                civitai_model_id=-1,
-                civitai_version_id=None,
-                civitai_data=None,
-            )
-            LOGGER.info("No CivitAI match found for %s", model["filename"])
-        else:
-            await update_model_civitai_match(
-                model_id=str(model["id"]),
-                civitai_model_id=int(payload.get("modelId", -1)),
-                civitai_version_id=int(payload["id"]) if payload.get("id") is not None else None,
-                civitai_data=payload,
-            )
-            LOGGER.info(
-                "Stored CivitAI match for %s (modelId=%s, versionId=%s)",
-                model["filename"],
-                payload.get("modelId"),
-                payload.get("id"),
-            )
-
-        SCAN_STATUS.civitai_done = index
-
-    LOGGER.info("CivitAI sync finished successfully")
-
 
 def get_scan_status() -> dict[str, Any]:
-    """Return the current scan job status."""
-    return SCAN_STATUS.to_dict()
+    """Return the current scan job status combined with worker."""
+    from .worker import get_worker_status
+    worker_st = get_worker_status()
+    st = SCAN_STATUS.to_dict()
+    # Merge hashing/civitai progress back onto scanner status so the frontend UI doesn't break
+    st["hashing_progress"] = worker_st["hashing_progress"]
+    st["civitai_progress"] = worker_st["civitai_progress"]
+    
+    if st["status"] == "idle" and worker_st["status"] in ("working", "scanning"):
+        # UI thinks it's still scanning if hashing/syncing
+        st["status"] = "scanning"
+    return st

@@ -21,6 +21,8 @@ from .database import (
     get_model_detail,
     link_image_to_model,
     list_images,
+    count_images,
+    count_models,
     list_models,
     replace_image_filter_values,
     replace_image_tags,
@@ -162,6 +164,7 @@ def register_routes(routes: Any) -> None:
     routes.put(r"/comfyg-models/api/models/{model_id:.+}/images/{image_id:\d+}/primary")(put_model_primary_image_handler)
     routes.delete(r"/comfyg-models/api/models/{model_id:.+}/images/{image_id:\d+}")(delete_model_image_handler)
     routes.get("/comfyg-models/api/user-images/{filename}")(get_user_image_handler)
+    routes.get("/comfyg-models/api/export-data")(get_export_data_handler)
     LOGGER.info("Registered settings API routes")
 
 
@@ -358,12 +361,25 @@ async def get_models_handler(request: Any) -> Any:
         "sort": request.rel_url.query.get("sort"),
         "sort_dir": request.rel_url.query.get("sort_dir"),
     }
+    
+    limit = int(request.rel_url.query.get("limit", 100))
+    page = int(request.rel_url.query.get("page", 1))
+    filters["limit"] = limit
+    filters["offset"] = max(0, (page - 1) * limit)
+
     try:
         items = await list_models(filters)
+        total = await count_models(filters)
     except Exception:
         LOGGER.exception("Failed to list models")
         return _json_response(error_payload("Failed to load models", "MODELS_LIST_ERROR"), status=500)
-    return _json_response({"items": items, "count": len(items)})
+    return _json_response({
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "page": page,
+        "limit": limit
+    })
 
 
 async def get_model_detail_handler(request: Any) -> Any:
@@ -405,13 +421,25 @@ async def get_images_handler(request: Any) -> Any:
         filters["has_metadata"] = query_params.get("has_metadata") == "true"
     if query_params.get("search"):
         filters["search"] = query_params.get("search")
+        
+    limit = int(query_params.get("limit", 100))
+    page = int(query_params.get("page", 1))
+    filters["limit"] = limit
+    filters["offset"] = max(0, (page - 1) * limit)
     
     try:
         items = await list_images(filters)
+        total = await count_images(filters)
     except Exception:
         LOGGER.exception("Failed to list canonical images")
         return _json_response(error_payload("Failed to load images", "IMAGES_LIST_ERROR"), status=500)
-    return _json_response({"items": items, "count": len(items)})
+    return _json_response({
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "page": page,
+        "limit": limit
+    })
 
 
 async def get_image_filters_handler(request: Any) -> Any:
@@ -829,3 +857,19 @@ async def delete_model_image_handler(request: Any) -> Any:
 
     LOGGER.info("Deleted user image %s for model %s", image_id, model_id)
     return _json_response({"ok": True})
+
+async def get_export_data_handler(request: Any) -> Any:
+    """Handle GET /comfyg-models/api/export-data?db=models (or images)"""
+    db_type = request.rel_url.query.get("db", "models")
+    from .settings import get_data_dir
+    
+    file_path = get_data_dir() / f"{db_type}.db"
+    if not file_path.exists():
+        return _json_response(error_payload("Database not found", "DB_NOT_FOUND"), status=404)
+        
+    with file_path.open("rb") as f:
+        body = f.read()
+        
+    response = web.Response(body=body, content_type="application/x-sqlite3")
+    response.headers["Content-Disposition"] = f'attachment; filename="{db_type}.db"'
+    return response

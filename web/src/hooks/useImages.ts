@@ -9,6 +9,9 @@ interface ErrorPayload {
 interface ImagesResponse {
   items: GalleryImage[];
   count: number;
+  total: number;
+  page: number;
+  limit: number;
 }
 
 interface RevealImageResponse {
@@ -62,6 +65,8 @@ function buildImagesUrl(filters: GalleryImageFilters): string {
   if (filters.search) {
     params.set("search", filters.search);
   }
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.limit) params.set("limit", String(filters.limit));
   const query = params.toString();
   return `/comfyg-models/api/images${query ? `?${query}` : ""}`;
 }

@@ -128,19 +128,23 @@ export interface ImageFilterBuckets {
 
 export interface GalleryImageFilters {
   model_id?: string;
+  source_type?: string;
+  has_metadata?: boolean;
+  search?: string;
   base_model?: string | string[];
   model_ref?: string | string[];
   lora_ref?: string | string[];
-  source_type?: "upload" | "scanned_file";
-  has_metadata?: boolean;
-  search?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface ModelFilters {
-  type?: ModelType[];
+  type?: string[];
   base_model?: string[];
   tags?: string[];
   search?: string;
   sort?: "name" | "date" | "size" | "civitai_rating" | "last_used";
   sort_dir?: "asc" | "desc";
+  page?: number;
+  limit?: number;
 }
