@@ -115,6 +115,10 @@ def scan_all_models() -> list[dict[str, Any]]:
             for path in directory_path.rglob("*"):
                 if not path.is_file() or path.suffix.lower() not in VALID_EXTENSIONS:
                     continue
+                
+                # Skip OS junk files (AppleDouble '._' files and .DS_Store)
+                if path.name.startswith("._") or path.name == ".DS_Store":
+                    continue
 
                 try:
                     relative_id = path.relative_to(comfy_base).as_posix()
@@ -174,9 +178,7 @@ async def _run_scan_job() -> None:
             SCAN_STATUS.done = index
 
         SCAN_STATUS.current_directory = None
-        from .worker import wake_worker
-        wake_worker()
-                SCAN_STATUS.status = "idle"
+        SCAN_STATUS.status = "idle"
         SCAN_STATUS.current_hash_file = None
         SCAN_STATUS.current_civitai_model = None
         LOGGER.info("Background model scan finished successfully")
@@ -192,7 +194,7 @@ async def _run_scan_job() -> None:
 
 def get_scan_status() -> dict[str, Any]:
     """Return the current scan job status combined with worker."""
-    from .worker import get_worker_status
+    from .worker import get_worker_status, stop_worker
     worker_st = get_worker_status()
     st = SCAN_STATUS.to_dict()
     # Merge hashing/civitai progress back onto scanner status so the frontend UI doesn't break
@@ -203,3 +205,20 @@ def get_scan_status() -> dict[str, Any]:
         # UI thinks it's still scanning if hashing/syncing
         st["status"] = "scanning"
     return st
+async def stop_scan_job() -> bool:
+    """Stop any running scan job and the worker."""
+    global _SCAN_TASK
+    stopped_any = False
+    
+    if _SCAN_TASK is not None and not _SCAN_TASK.done():
+        _SCAN_TASK.cancel()
+        SCAN_STATUS.status = "idle"
+        LOGGER.info("Scan job cancelled by user")
+        stopped_any = True
+        
+    from .worker import stop_worker
+    worker_stopped = await stop_worker()
+    if worker_stopped:
+        stopped_any = True
+        
+    return stopped_any

@@ -68,7 +68,6 @@ def _startup() -> None:
     LOGGER.info("Runtime data directory ready at %s", DATA_DIR)
     _register_static_routes()
     _run_async_task(init_db())
-    _run_async_task(worker_loop())
 
 
 _startup()

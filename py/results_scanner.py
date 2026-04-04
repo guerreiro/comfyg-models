@@ -11,7 +11,6 @@ from typing import Any
 from .database import (
     compute_sha256,
     get_models_index,
-    get_setting,
     link_image_to_model,
     mark_missing_scanned_sources,
     replace_image_filter_values,
@@ -21,6 +20,7 @@ from .database import (
 )
 from .image_metadata import extract_comfy_metadata
 from .image_indexing import build_filter_values, build_image_tags
+from .settings import load_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +62,8 @@ _RESULTS_SCAN_TASK: asyncio.Task[None] | None = None
 
 
 async def _normalize_scan_paths() -> list[Path]:
-    raw_paths = await get_setting("generated_image_scan_paths") or []
+    settings = load_settings()
+    raw_paths = settings.get("generated_image_scan_paths", [])
     normalized: list[Path] = []
     for raw_path in raw_paths:
         try:
@@ -87,7 +88,8 @@ async def _discover_result_images() -> list[Path]:
         LOGGER.info("Scanning generated images in %s", root)
         for path in root.rglob("*"):
             if path.is_file() and path.suffix.lower() in VALID_RESULTS_EXTENSIONS:
-                discovered.append(path)
+                if not path.name.startswith("._") and path.name != ".DS_Store":
+                    discovered.append(path)
     LOGGER.info("Discovered %s generated result images", len(discovered))
     return discovered
 
@@ -230,3 +232,13 @@ async def _run_results_scan_job() -> None:
 def get_results_scan_status() -> dict[str, Any]:
     """Return the current generated images scan status."""
     return RESULTS_SCAN_STATUS.to_dict()
+
+async def stop_results_scan_job() -> bool:
+    """Stop any running results scan job."""
+    global _RESULTS_SCAN_TASK
+    if _RESULTS_SCAN_TASK is not None and not _RESULTS_SCAN_TASK.done():
+        _RESULTS_SCAN_TASK.cancel()
+        RESULTS_SCAN_STATUS.status = "idle"
+        LOGGER.info("Results scan job cancelled by user")
+        return True
+    return False

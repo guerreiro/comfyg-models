@@ -1295,31 +1295,3 @@ async def delete_managed_image_source(model_id: str, image_id: int) -> dict[str,
     return source
 
 
-async def get_setting(key: str) -> Any | None:
-    """Get a setting value from the database."""
-    async with connection_context() as connection:
-        async with connection.execute(
-            "SELECT value FROM settings WHERE key = ?",
-            (key,),
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            value = row[0]
-            if isinstance(value, str):
-                try:
-                    return json.loads(value)
-                except json.JSONDecodeError:
-                    return value
-            return value
-
-
-async def set_setting(key: str, value: Any) -> None:
-    """Set a setting value in the database."""
-    serialized = json.dumps(value, ensure_ascii=True) if value is not None else None
-    async with connection_context() as connection:
-        await connection.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            (key, serialized),
-        )
-        await connection.commit()

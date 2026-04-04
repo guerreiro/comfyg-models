@@ -152,3 +152,23 @@ export function useModelImageDeleteMutation(modelId: string | null) {
     },
   });
 }
+async function syncModel(modelId: string): Promise<{ status: string }> {
+  const response = await fetch(`/comfyg-models/api/models/${encodeURIComponent(modelId)}/sync`, {
+    method: "POST",
+  });
+  return parseResponse<{ status: string }>(response);
+}
+
+export function useModelSyncMutation(modelId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => syncModel(modelId!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.models });
+      if (modelId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.modelDetail(modelId) });
+      }
+    },
+  });
+}

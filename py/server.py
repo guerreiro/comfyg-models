@@ -34,10 +34,10 @@ from .database import (
 from .civitai import verify_api_key
 from .image_metadata import extract_comfy_metadata
 from .image_indexing import build_filter_values, build_image_tags
-from .results_scanner import get_results_scan_status, start_results_scan_job
-from .scanner import get_scan_status, start_scan_job
+from .results_scanner import get_results_scan_status, start_results_scan_job, stop_results_scan_job
+from .scanner import get_scan_status, start_scan_job, stop_scan_job
 from .settings import ensure_data_dir, load_settings, redact_settings, save_settings
-from .database import get_setting, set_setting
+from .worker import wake_worker, sync_single_model
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,10 +71,9 @@ async def build_settings_response_payload() -> dict[str, Any]:
     settings = load_settings()
     payload = redact_settings(settings)
     
-    db_paths = await get_setting("generated_image_scan_paths")
-    if db_paths is None:
-        db_paths = []
-    payload["generated_image_scan_paths"] = db_paths
+    # Paths are already in the settings dict since we migrated to settings.json
+    if "generated_image_scan_paths" not in payload:
+        payload["generated_image_scan_paths"] = []
     
     LOGGER.debug("Prepared redacted settings payload with keys: %s", ", ".join(sorted(payload.keys())))
     return payload
@@ -100,7 +99,7 @@ async def update_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 LOGGER.warning("Ignoring non-absolute generated image scan path %s", path)
                 continue
             normalized_paths.append(path.as_posix())
-        await set_setting("generated_image_scan_paths", list(dict.fromkeys(normalized_paths)))
+        next_settings["generated_image_scan_paths"] = list(dict.fromkeys(normalized_paths))
 
     civitai_username: str | None = None
     incoming_key = payload.get("civitai_api_key")
@@ -116,12 +115,9 @@ async def update_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             next_settings.pop("civitai_api_key", None)
 
     save_settings(next_settings)
-    db_paths = await get_setting("generated_image_scan_paths")
-    if db_paths is None:
-        db_paths = []
     response = {
         "ok": True,
-        "settings": redact_settings(next_settings) | {"generated_image_scan_paths": db_paths},
+        "settings": redact_settings(next_settings),
     }
     if civitai_username:
         response["civitai_username"] = civitai_username
@@ -145,6 +141,10 @@ def register_routes(routes: Any) -> None:
     routes.get("/comfyg-models/api/settings")(get_settings_handler)
     routes.put("/comfyg-models/api/settings")(put_settings_handler)
     routes.post("/comfyg-models/api/scan")(post_scan_handler)
+    routes.post("/comfyg-models/api/scan/stop")(post_stop_scan_handler)
+    routes.post("/comfyg-models/api/worker/start")(post_worker_start_handler)
+    routes.post(r"/comfyg-models/api/models/{model_id:.+}/sync")(post_model_sync_handler)
+    routes.post("/comfyg-models/api/results/scan/stop")(post_stop_results_scan_handler)
     routes.get("/comfyg-models/api/scan/status")(get_scan_status_handler)
     routes.post("/comfyg-models/api/results/scan")(post_results_scan_handler)
     routes.get("/comfyg-models/api/results/scan/status")(get_results_scan_status_handler)
@@ -220,6 +220,29 @@ async def get_scan_status_handler(_request: Any) -> Any:
     return _json_response(get_scan_status())
 
 
+async def post_worker_start_handler(_request: Any) -> Any:
+    """Handle POST /comfyg-models/api/worker/start."""
+    try:
+        wake_worker()
+    except Exception:
+        LOGGER.exception("Failed to wake worker")
+        return _json_response(error_payload("Failed to start worker", "WORKER_START_ERROR"), status=500)
+    return _json_response({"status": "started"})
+
+
+async def post_model_sync_handler(request: Any) -> Any:
+    """Handle POST /comfyg-models/api/models/{model_id}/sync."""
+    model_id = request.match_info["model_id"]
+    try:
+        success = await sync_single_model(model_id)
+        if not success:
+            return _json_response(error_payload("Model not found or could not be synced", "MODEL_SYNC_FAILED"), status=404)
+    except Exception:
+        LOGGER.exception("Failed to sync model %s", model_id)
+        return _json_response(error_payload("Failed to sync model", "MODEL_SYNC_ERROR"), status=500)
+    return _json_response({"status": "synced"})
+
+
 async def post_results_scan_handler(_request: Any) -> Any:
     """Handle POST /comfyg-models/api/results/scan."""
     try:
@@ -282,42 +305,69 @@ async def get_directories_handler(request: Any) -> Any:
 
 
 async def post_pick_directory_handler(_request: Any) -> Any:
-    """Handle POST /comfyg-models/api/fs/pick-directory using the native macOS folder picker."""
-    if sys.platform != "darwin":
+    """Handle POST /comfyg-models/api/fs/pick-directory using native folder picker."""
+    if sys.platform == "darwin":
+        script = 'POSIX path of (choose folder with prompt "Select a folder to scan for generated images")'
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                return _json_response({"status": "cancelled"})
+
+            path = Path(result.stdout.strip())
+        except Exception:
+            return _json_response({"status": "cancelled"})
+    elif sys.platform.startswith("linux"):
+        # Most reliable way to open a GUI picker from an async handler without messing with event loops
+        # is to spawn a tiny subprocess that just runs the picker and returns the path.
+        picker_script = """
+import tkinter as tk
+from tkinter import filedialog
+import os
+
+root = tk.Tk()
+root.withdraw()
+# Ensure it shows at the very front
+root.attributes("-topmost", True)
+path = filedialog.askdirectory(title="Select a folder to scan for generated images")
+if path:
+    print(os.path.abspath(path))
+"""
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", picker_script],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            path_str = result.stdout.strip()
+            if not path_str:
+                return _json_response({"status": "cancelled"})
+            path = Path(path_str)
+        except Exception as e:
+            LOGGER.exception("Failed to run Tkinter directory picker: %s", e)
+            return _json_response(
+                error_payload("Could not open directory picker. Make sure tkinter is working.", "DIRECTORY_PICKER_ERROR"),
+                status=500,
+            )
+    else:
         return _json_response(
-            error_payload("Native directory picker is only available on macOS", "DIRECTORY_PICKER_UNSUPPORTED"),
+            error_payload(f"Native directory picker is not supported on {sys.platform}", "DIRECTORY_PICKER_UNSUPPORTED"),
             status=501,
         )
-
-    script = 'POSIX path of (choose folder with prompt "Select a folder to scan for generated images")'
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        LOGGER.exception("Failed to open native macOS directory picker")
-        return _json_response(error_payload("Failed to open directory picker", "DIRECTORY_PICKER_ERROR"), status=500)
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip().lower()
-        if "user canceled" in stderr or "cancelled" in stderr:
-            return _json_response({"status": "cancelled"})
-        LOGGER.warning("Native directory picker failed: %s", result.stderr.strip())
-        return _json_response(error_payload("Failed to select directory", "DIRECTORY_PICKER_ERROR"), status=500)
-
-    selected_path = (result.stdout or "").strip()
-    if not selected_path:
+    if not path.exists() or not path.is_dir():
         return _json_response({"status": "cancelled"})
 
-    try:
-        normalized = Path(selected_path).expanduser().resolve()
-    except Exception:
-        return _json_response(error_payload("Invalid selected directory", "INVALID_DIRECTORY_PATH"), status=400)
-
-    return _json_response({"status": "selected", "path": normalized.as_posix()})
+    return _json_response(
+        {
+            "status": "selected",
+            "path": path.as_posix(),
+        }
+    )
 
 
 async def civitai_proxy_handler(request: Any) -> Any:
@@ -873,3 +923,13 @@ async def get_export_data_handler(request: Any) -> Any:
     response = web.Response(body=body, content_type="application/x-sqlite3")
     response.headers["Content-Disposition"] = f'attachment; filename="{db_type}.db"'
     return response
+
+async def post_stop_scan_handler(_request: Any) -> Any:
+    """Handle POST /comfyg-models/api/scan/stop."""
+    stopped = await stop_scan_job()
+    return _json_response({"stopped": stopped})
+
+async def post_stop_results_scan_handler(_request: Any) -> Any:
+    """Handle POST /comfyg-models/api/results/scan/stop."""
+    stopped = await stop_results_scan_job()
+    return _json_response({"stopped": stopped})

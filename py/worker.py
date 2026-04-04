@@ -15,6 +15,7 @@ from .database import (
 from .hasher import hash_file, preferred_hash
 from .settings import load_settings
 from .civitai import lookup_by_hash
+from .database import get_model_detail
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,9 +52,13 @@ class WorkerStatus:
         }
 
 WORKER_STATUS = WorkerStatus()
+_WORKER_TASK: asyncio.Task[None] | None = None
 
 def wake_worker() -> None:
     """Notify the worker that new models might be ready for hashing or syncing."""
+    global _WORKER_TASK
+    if _WORKER_TASK is None or _WORKER_TASK.done():
+        start_worker()
     WORKER_WAKE_EVENT.set()
 
 def get_worker_status() -> dict[str, Any]:
@@ -151,7 +156,73 @@ def start_worker() -> None:
     LOGGER.info("Registering background hashing worker onto event loop")
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(worker_loop())
+        global _WORKER_TASK
+        _WORKER_TASK = loop.create_task(worker_loop())
     except RuntimeError:
         # If there's no loop running yet (like during import), rely on caller to start it later
         pass
+
+async def stop_worker() -> bool:
+    """Stop the background worker if it is doing something (hashing/syncing)."""
+    global _WORKER_TASK
+    if WORKER_STATUS.status != "idle":
+        # We don't want to kill the whole loop permanently, just current iteration
+        WORKER_STATUS.status = "idle"
+        WORKER_STATUS.hashing_total = 0
+        WORKER_STATUS.hashing_done = 0
+        WORKER_STATUS.civitai_total = 0
+        WORKER_STATUS.civitai_done = 0
+        
+        if _WORKER_TASK and not _WORKER_TASK.done():
+             _WORKER_TASK.cancel()
+             # The loop will restart itself if we are in the main ComfyUI process
+             # but we need to ensure it's re-created.
+             return True
+    return False
+
+async def sync_single_model(model_id: str) -> bool:
+    """Manually hash and sync a single model with CivitAI."""
+    from pathlib import Path
+    
+    model = await get_model_detail(model_id)
+    if not model or not model.get("filename") or not model.get("directory"):
+        return False
+        
+    model_path = Path(model["directory"]) / model["filename"]
+    if not model_path.exists():
+        return False
+        
+    hashes = await asyncio.to_thread(hash_file, model_path)
+    await update_model_hashes(
+        model_id=model_id,
+        sha256=str(hashes["sha256"]) if hashes["sha256"] else None,
+        blake3=str(hashes["blake3"]) if hashes["blake3"] else None,
+    )
+    
+    api_key = load_settings().get("civitai_api_key")
+    algorithm, hash_value = preferred_hash(
+        {
+            "sha256": hashes.get("sha256"),
+            "blake3": hashes.get("blake3"),
+        }
+    )
+    if hash_value:
+        payload = await lookup_by_hash(hash_value, algorithm, api_key=api_key)
+        if payload is None:
+            await update_model_civitai_match(
+                model_id=model_id,
+                civitai_model_id=-1,
+                civitai_version_id=None,
+                civitai_data=None,
+            )
+        else:
+            version_id = payload.get("id")
+            await update_model_civitai_match(
+                model_id=model_id,
+                civitai_model_id=int(payload.get("modelId", -1)),
+                civitai_version_id=int(version_id) if version_id is not None else None,
+                civitai_data=payload,
+            )
+            
+    return True
+

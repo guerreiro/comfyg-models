@@ -36,3 +36,73 @@ code {
     "JetBrains Mono",
     monospace;
 }
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.civitai-description h1, 
+.civitai-description h2, 
+.civitai-description h3 {
+  color: #fff;
+  font-weight: 700;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.civitai-description p {
+  margin-bottom: 1rem;
+  line-height: 1.6;
+}
+
+.civitai-description ul, 
+.civitai-description ol {
+  margin-bottom: 1rem;
+  padding-left: 1.25rem;
+}
+
+.civitai-description li {
+  margin-bottom: 0.5rem;
+}
+
+.civitai-description a {
+  color: #fbbf24;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.civitai-description img {
+  border-radius: 1rem;
+  margin: 1.5rem 0;
+  max-width: 100%;
+}
+
+.civitai-description blockquote {
+  border-left: 4px solid rgba(255, 255, 255, 0.1);
+  padding-left: 1rem;
+  font-style: italic;
+  color: #a8a29e;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}

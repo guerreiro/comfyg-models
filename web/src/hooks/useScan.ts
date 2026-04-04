@@ -40,6 +40,14 @@ async function fetchScanStatus(): Promise<ScanStatusResponse> {
   return parseResponse<ScanStatusResponse>(response);
 }
 
+
+async function stopScan(): Promise<{ stopped: boolean }> {
+  const response = await fetch("/comfyg-models/api/scan/stop", {
+    method: "POST",
+  });
+  return parseResponse<{ stopped: boolean }>(response);
+}
+
 async function startScan(): Promise<StartScanResponse> {
   const response = await fetch("/comfyg-models/api/scan", {
     method: "POST",
@@ -47,12 +55,19 @@ async function startScan(): Promise<StartScanResponse> {
   return parseResponse<StartScanResponse>(response);
 }
 
+async function startWorker(): Promise<{ status: string }> {
+  const response = await fetch("/comfyg-models/api/worker/start", {
+    method: "POST",
+  });
+  return parseResponse<{ status: string }>(response);
+}
+
 export function useScanStatusQuery() {
   return useQuery({
     queryKey: queryKeys.scanStatus,
     queryFn: fetchScanStatus,
     refetchInterval: (query) => {
-      const data = query.state.data;
+      const data = query.state?.data;
       return data?.status === "scanning" ? 1000 : false;
     },
   });
@@ -63,6 +78,27 @@ export function useStartScanMutation() {
 
   return useMutation({
     mutationFn: startScan,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
+    },
+  });
+}
+
+export function useStartWorkerMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: startWorker,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
+    },
+  });
+}
+
+export function useStopScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: stopScan,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
     },

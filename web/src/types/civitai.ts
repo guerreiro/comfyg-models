@@ -52,6 +52,7 @@ export interface CivitaiModelData {
   baseModel?: string;
   images?: CivitaiModelImage[];
   model?: {
+    name?: string;
     baseModel?: string;
   };
   modelVersion?: {
@@ -60,5 +61,6 @@ export interface CivitaiModelData {
   };
   description?: string;
   stats?: CivitaiModelStats;
+  trainedWords?: string[];
   modelVersions?: CivitaiModelVersion[];
 }

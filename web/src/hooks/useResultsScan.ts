@@ -29,6 +29,14 @@ async function fetchResultsScanStatus(): Promise<ResultsScanStatusResponse> {
   return parseResponse<ResultsScanStatusResponse>(response);
 }
 
+
+async function stopResultsScan(): Promise<{ stopped: boolean }> {
+  const response = await fetch("/comfyg-models/api/results/scan/stop", {
+    method: "POST",
+  });
+  return parseResponse<{ stopped: boolean }>(response);
+}
+
 async function startResultsScan(): Promise<{ status: "started" | "already_running" }> {
   const response = await fetch("/comfyg-models/api/results/scan", {
     method: "POST",
@@ -51,6 +59,16 @@ export function useStartResultsScanMutation() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.resultsScanStatus });
       await queryClient.invalidateQueries({ queryKey: queryKeys.images });
+    },
+  });
+}
+
+export function useStopResultsScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: stopResultsScan,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.resultsScanStatus });
     },
   });
 }

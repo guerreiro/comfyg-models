@@ -4,13 +4,12 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
-  Filter,
   FolderOpen,
   GalleryHorizontal,
   Grip,
-  ImagePlus,
   Images,
   Link2,
+  RefreshCcw,
   ScanSearch,
   Search,
   Settings2,
@@ -25,6 +24,7 @@ import {
   useModelImageUploadMutation,
   useModelPrimaryImageMutation,
   useModelsQuery,
+  useModelSyncMutation,
 } from "./hooks/useModels";
 import {
   useImageDetailQuery,
@@ -32,14 +32,14 @@ import {
   useResultsImageUploadMutation,
   useRevealImageMutation,
 } from "./hooks/useImages";
-import { useResultsScanStatusQuery, useStartResultsScanMutation } from "./hooks/useResultsScan";
-import { useScanStatusQuery, useStartScanMutation } from "./hooks/useScan";
+import { useResultsScanStatusQuery, useStartResultsScanMutation, useStopResultsScanMutation } from "./hooks/useResultsScan";
+import { useScanStatusQuery, useStartScanMutation, useStopScanMutation, useStartWorkerMutation } from "./hooks/useScan";
 import { useSaveSettingsMutation, useSettingsQuery } from "./hooks/useSettings";
 import type { CivitaiModelImage } from "./types/civitai";
 import type { GalleryImageFilters, Model, ModelFilters } from "./types/model";
 
 type ModalView = "none" | "scan-models" | "scan-results" | "settings" | "model" | "image";
-type ModelModalTab = "gallery" | "overview" | "civitai";
+type ModelModalTab = "gallery" | "examples" | "overview";
 type PrimaryView = "library" | "results";
 
 function getCivitaiUrl(model: Model): string | null {
@@ -93,6 +93,19 @@ function getBaseModel(model: Model): string | null {
   );
 }
 
+function getModelName(model: Model): string {
+  if (model.civitai_data) {
+    const modelName = model.civitai_data.model?.name || model.civitai_data.name;
+    const versionName = model.civitai_data.name;
+    
+    if (modelName && versionName && modelName !== versionName) {
+      return `${modelName} (${versionName})`;
+    }
+    return modelName || model.filename;
+  }
+  return model.filename;
+}
+
 function addUniquePath(paths: string[], value: string): string[] {
   const normalized = value.trim();
   if (!normalized) {
@@ -106,8 +119,10 @@ export default function App() {
   const saveSettings = useSaveSettingsMutation();
   const scanStatusQuery = useScanStatusQuery();
   const startScan = useStartScanMutation();
+  const stopScan = useStopScanMutation();
   const resultsScanStatusQuery = useResultsScanStatusQuery();
   const startResultsScan = useStartResultsScanMutation();
+  const stopResultsScan = useStopResultsScanMutation();
   const directoryPicker = useDirectoryPickerMutation();
 
   const [primaryView, setPrimaryView] = useState<PrimaryView>("library");
@@ -119,15 +134,13 @@ export default function App() {
   const [showNsfwPreviews, setShowNsfwPreviews] = useState(false);
   const [generatedImageScanPaths, setGeneratedImageScanPaths] = useState<string[]>([]);
   const [newGeneratedPath, setNewGeneratedPath] = useState("");
-  const [uploadCaption, setUploadCaption] = useState("");
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [baseModelFilter, setBaseModelFilter] = useState<string>("all");
   const [sort, setSort] = useState<ModelFilters["sort"]>("name");
   const [sortDir, setSortDir] = useState<ModelFilters["sort_dir"]>("asc");
   const [modelModalTab, setModelModalTab] = useState<ModelModalTab>("gallery");
-  const [showUploadForm, setShowUploadForm] = useState(false);
+  const [modelGalleryDropActive, setModelGalleryDropActive] = useState(false);
+  const [modelGalleryUploadNotice, setModelGalleryUploadNotice] = useState<string | null>(null);
   const [imagePendingDelete, setImagePendingDelete] = useState<number | null>(null);
   const [resultsSearch, setResultsSearch] = useState("");
   const [scanPathsSavedAt, setScanPathsSavedAt] = useState<number | null>(null);
@@ -145,13 +158,12 @@ export default function App() {
     () => ({
       search: deferredSearch.trim() || undefined,
       type: typeFilter === "all" ? undefined : [typeFilter as Model["type"]],
-      base_model: baseModelFilter === "all" ? undefined : [baseModelFilter],
       sort,
       sort_dir: sortDir,
       page: modelPage,
       limit: modelLimit,
     }),
-    [deferredSearch, typeFilter, baseModelFilter, sort, sortDir, modelPage, modelLimit],
+    [deferredSearch, typeFilter, sort, sortDir, modelPage, modelLimit],
   );
   const modelsQuery = useModelsQuery(queryFilters);
   const imageFilters = useMemo<GalleryImageFilters>(
@@ -209,9 +221,6 @@ export default function App() {
   const allModels = allModelsQuery.data?.items ?? [];
   const filteredModels = modelsQuery.data?.items ?? [];
   const availableTypes = Array.from(new Set(allModels.map((model) => model.type))).sort();
-  const availableBaseModels = Array.from(
-    new Set(allModels.map((model) => getBaseModel(model)).filter((value): value is string => Boolean(value))),
-  ).sort((a, b) => a.localeCompare(b));
 
   const persistGeneratedScanPaths = async (paths: string[]) => {
     setScanPathsSavedAt(null);
@@ -237,24 +246,12 @@ export default function App() {
     setApiKey("");
   };
 
-  const handleUploadSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!uploadFile) {
-      return;
-    }
-
-    await imageUpload.mutateAsync({
-      file: uploadFile,
-      caption: uploadCaption,
-    });
-
-    setUploadCaption("");
-    setUploadFile(null);
-  };
 
   const username = saveSettings.data?.civitai_username;
   const configured = settingsQuery.data?.civitai_api_key_configured ?? false;
   const scanStatus = scanStatusQuery.data;
+  const startWorker = useStartWorkerMutation();
+  const syncModel = useModelSyncMutation(selectedModelId);
   const resultsScanStatus = resultsScanStatusQuery.data;
   const scanProgress =
     scanStatus && scanStatus.total > 0 ? Math.round((scanStatus.done / scanStatus.total) * 100) : 0;
@@ -273,11 +270,19 @@ export default function App() {
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(236,122,49,0.10),_transparent_24%),radial-gradient(circle_at_85%_10%,_rgba(56,189,149,0.08),_transparent_22%),linear-gradient(180deg,_#09090b_0%,_#111215_42%,_#17181d_100%)] text-stone-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-5 py-6 lg:px-8">
-        <header className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-4">
-              <h1 className="text-4xl font-semibold tracking-tight text-white md:text-5xl">Comfyg Models</h1>
+      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-4 px-4 py-4 lg:px-6">
+        <header className="flex flex-col gap-3 rounded-[1.5rem] border border-white/10 bg-white/5 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl flex flex-wrap items-center gap-4">
+                Comfyg Models
+                {(scanStatus?.status === "scanning" || resultsScanStatus?.status === "scanning") && (
+                  <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 animate-pulse tracking-widest uppercase">
+                    <RefreshCcw className="w-3 h-3 animate-spin" />
+                    Scanning
+                  </span>
+                )}
+              </h1>
               <div className="flex flex-wrap gap-2">
                 {[
                   { id: "library", label: "Library", icon: Sparkles },
@@ -301,6 +306,20 @@ export default function App() {
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (primaryView === "library") {
+                      modelsQuery.refetch();
+                    } else {
+                      imagesQuery.refetch();
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
+                  title="Refresh list"
+                >
+                  <RefreshCcw className="h-4 w-4" />
+                </button>
               </div>
             </div>
 
@@ -333,7 +352,7 @@ export default function App() {
           </div>
 
           {primaryView === "library" ? (
-            <section className="grid gap-4 lg:grid-cols-[1.25fr_0.8fr_0.8fr]">
+            <section className="grid gap-3 lg:grid-cols-[1.5fr_1fr]">
               <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
                 <Search className="h-4 w-4 text-stone-500" />
                 <input
@@ -345,23 +364,7 @@ export default function App() {
                 />
               </label>
 
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Filter className="h-4 w-4 text-stone-500" />
-                <select
-                  value={typeFilter}
-                  onChange={(event) => setTypeFilter(event.target.value)}
-                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
-                >
-                  <option value="all" className="bg-stone-950">
-                    All model types
-                  </option>
-                  {availableTypes.map((type) => (
-                    <option key={type} value={type} className="bg-stone-950">
-                      {type}
-                    </option>
-                  ))}
-                </select>
-              </label>
+
 
               <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
                 <Sparkles className="h-4 w-4 text-stone-500" />
@@ -409,51 +412,76 @@ export default function App() {
         </header>
 
         {primaryView === "library" ? (
-        <section className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setBaseModelFilter("all")}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-              baseModelFilter === "all"
-                ? "bg-white text-stone-950"
-                : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
-            }`}
-          >
-            All base models
-          </button>
-          {availableBaseModels.map((baseModel) => (
-            <button
-              key={baseModel}
-              type="button"
-              onClick={() => setBaseModelFilter(baseModel)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                baseModelFilter === baseModel
-                  ? "bg-emerald-300 text-stone-950"
-                  : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
-              }`}
-            >
-              {baseModel}
-            </button>
-          ))}
-        </section>
+          <div className="flex flex-col gap-4">
+            <div className="space-y-3">
+              <div className="flex flex-col gap-2">
+                <span className="px-1 text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">Model Types</span>
+                <section className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                  <button
+                    type="button"
+                    onClick={() => setTypeFilter("all")}
+                    className={`flex-none rounded-full px-4 py-1.5 text-xs font-semibold transition-all duration-300 ${
+                      typeFilter === "all"
+                        ? "bg-white text-stone-950 shadow-[0_0_20px_rgba(255,255,255,0.15)]"
+                        : "border border-white/10 bg-white/5 text-stone-400 hover:border-white/20 hover:bg-white/10 hover:text-stone-200"
+                    }`}
+                  >
+                    All types
+                  </button>
+                  {availableTypes.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setTypeFilter(type)}
+                      className={`flex-none rounded-full px-4 py-1.5 text-xs font-semibold transition-all duration-300 ${
+                        typeFilter === type
+                          ? "bg-emerald-400 text-stone-950 shadow-[0_0_20px_rgba(52,211,153,0.15)]"
+                          : "border border-white/10 bg-white/5 text-stone-400 hover:border-white/20 hover:bg-white/10 hover:text-stone-200"
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </section>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {primaryView === "library" ? (
-        <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <>
+            {modelsQuery.data && modelsQuery.data.total > 0 ? (
+            <div className="col-span-full mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+              <span className="text-xs text-stone-400">
+                Showing {Math.min(filteredModels.length, modelLimit)} of {modelsQuery.data.total} models
+              </span>
+              <div className="flex items-center gap-2">
+                 <button disabled={modelPage <= 1} onClick={() => setModelPage(p => p - 1)} className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-stone-300 hover:bg-white/10 disabled:opacity-50">Prev</button>
+                 <span className="text-xs text-stone-400">Page {modelPage}</span>
+                 <button disabled={filteredModels.length < modelLimit} onClick={() => setModelPage(p => p + 1)} className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-stone-300 hover:bg-white/10 disabled:opacity-50">Next</button>
+              </div>
+              <select value={modelLimit} onChange={(e) => { setModelLimit(Number(e.target.value)); setModelPage(1); }} className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-xs text-white">
+                <option value={20} className="bg-stone-900">20 / page</option>
+                <option value={50} className="bg-stone-900">50 / page</option>
+                <option value={100} className="bg-stone-900">100 / page</option>
+              </select>
+            </div>
+          ) : null}
+        <section className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {modelsQuery.isLoading ? (
-            <div className="col-span-full rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
+            <div className="col-span-full rounded-[1.5rem] border border-white/10 bg-white/5 p-6 text-sm text-stone-400">
               Loading models...
             </div>
           ) : null}
 
           {modelsQuery.isError ? (
-            <div className="col-span-full rounded-[1.8rem] border border-rose-500/20 bg-rose-500/10 p-8 text-sm text-rose-200">
+            <div className="col-span-full rounded-[1.5rem] border border-rose-500/20 bg-rose-500/10 p-6 text-sm text-rose-200">
               {modelsQuery.error.message}
             </div>
           ) : null}
 
           {!modelsQuery.isLoading && filteredModels.length === 0 ? (
-            <div className="col-span-full rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
+            <div className="col-span-full rounded-[1.5rem] border border-white/10 bg-white/5 p-6 text-sm text-stone-400">
               No models matched the current filters.
             </div>
           ) : null}
@@ -469,7 +497,6 @@ export default function App() {
                 onClick={() => {
                   setSelectedModelId(model.id);
                   setModelModalTab("gallery");
-                  setShowUploadForm(false);
                   setImagePendingDelete(null);
                   setModalView("model");
                 }}
@@ -488,14 +515,14 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,_transparent,_rgba(0,0,0,0.82))] p-4">
+                  <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,_transparent,_rgba(0,0,0,0.82))] p-3">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <h2 className="truncate text-base font-semibold text-white">{model.filename}</h2>
                         <p className="mt-1 truncate text-xs uppercase tracking-[0.18em] text-stone-300">{model.type}</p>
                       </div>
                       {preview?.kind === "user" ? (
-                        <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-200">
+                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-200">
                           custom thumb
                         </span>
                       ) : null}
@@ -503,7 +530,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="space-y-3 p-4">
+                <div className="space-y-2 p-3">
                   <div className="flex items-center justify-between gap-3 text-sm text-stone-400">
                     <span className="truncate">{baseModel ?? "Local only"}</span>
                     <span>{model.civitai_data?.stats?.rating ? `${model.civitai_data.stats.rating.toFixed(1)}★` : formatFileSize(model.file_size)}</span>
@@ -513,27 +540,13 @@ export default function App() {
             );
           })}
 
-          {modelsQuery.data && modelsQuery.data.total > 0 ? (
-            <div className="col-span-full mt-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-black/20 p-4">
-              <span className="text-sm text-stone-400">
-                Showing {Math.min(filteredModels.length, modelLimit)} of {modelsQuery.data.total} models
-              </span>
-              <div className="flex items-center gap-2">
-                 <button disabled={modelPage <= 1} onClick={() => setModelPage(p => p - 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Prev</button>
-                 <span className="text-sm text-stone-400">Page {modelPage}</span>
-                 <button disabled={filteredModels.length < modelLimit} onClick={() => setModelPage(p => p + 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Next</button>
-              </div>
-              <select value={modelLimit} onChange={(e) => { setModelLimit(Number(e.target.value)); setModelPage(1); }} className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-sm text-white">
-                <option value={20} className="bg-stone-900">20 per page</option>
-                <option value={50} className="bg-stone-900">50 per page</option>
-                <option value={100} className="bg-stone-900">100 per page</option>
-              </select>
-            </div>
-          ) : null}
+          
 
-        </section>
+                    </section>
+          </>
         ) : (
-        <section
+          <>
+            <section
           className="relative rounded-[1.8rem]"
           onDragOver={(event) => {
             event.preventDefault();
@@ -583,6 +596,23 @@ export default function App() {
             </div>
           ) : null}
 
+                    {imagesQuery.data && imagesQuery.data.total > 0 ? (
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-black/20 p-4">
+              <span className="text-sm text-stone-400">
+                Showing {imagesQuery.data.items.length} of {imagesQuery.data.total} images
+              </span>
+              <div className="flex items-center gap-2">
+                 <button disabled={imagePage <= 1} onClick={() => setImagePage(p => p - 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Prev</button>
+                 <span className="text-sm text-stone-400">Page {imagePage}</span>
+                 <button disabled={imagesQuery.data.items.length < imageLimit} onClick={() => setImagePage(p => p + 1)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-stone-300 hover:bg-white/10 disabled:opacity-50">Next</button>
+              </div>
+              <select value={imageLimit} onChange={(e) => { setImageLimit(Number(e.target.value)); setImagePage(1); }} className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-sm text-white">
+                <option value={20} className="bg-stone-900">20 per page</option>
+                <option value={50} className="bg-stone-900">50 per page</option>
+                <option value={100} className="bg-stone-900">100 per page</option>
+              </select>
+            </div>
+          ) : null}
           <div className="columns-1 gap-5 sm:columns-2 xl:columns-3 2xl:columns-4">
             {imagesQuery.isLoading ? (
               <div className="mb-5 break-inside-avoid rounded-[1.8rem] border border-white/10 bg-white/5 p-8 text-sm text-stone-400">
@@ -612,9 +642,12 @@ export default function App() {
                 <div className="relative overflow-hidden bg-[linear-gradient(135deg,_#1c1d22,_#282a31_50%,_#1b1c20)]">
                   <img src={`${image.preview_url}?_t=${image.updated_at}`} alt={image.sha256} className="h-auto w-full transition duration-500 group-hover:scale-[1.01]" />
                   <div className="absolute left-3 top-3 flex gap-2">
-                    {(image.sources ?? []).slice(0, 2).map((source) => (
+                    {(image.sources ?? [])
+                      .filter((source) => source.source_type === "upload")
+                      .slice(0, 2)
+                      .map((source) => (
                       <span key={source.id} className="rounded-full border border-white/10 bg-black/55 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur">
-                        {source.source_type === "upload" ? "Upload" : "Generated"}
+                        Upload
                       </span>
                     ))}
                   </div>
@@ -640,7 +673,8 @@ export default function App() {
                 </select>
               </div>
             ) : null}
-        </section>
+                    </section>
+          </>
         )}
       </div>
 
@@ -661,7 +695,7 @@ export default function App() {
                     ) : null}
                   </div>
                   <h2 className="mt-3 truncate text-xl font-semibold text-white">
-                    {selectedModel.civitai_data?.name ?? selectedModel.filename}
+                    {getModelName(selectedModel)}
                   </h2>
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-stone-400">
                     <span className="truncate">{selectedModel.filename}</span>
@@ -686,7 +720,7 @@ export default function App() {
                         key={source.id}
                         className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-300"
                       >
-                        {source.source_type === "upload" ? "Upload" : "Generated"}
+                        {source.source_type === "upload" ? "Upload" : ""}
                       </span>
                     ))}
                   </div>
@@ -735,89 +769,135 @@ export default function App() {
                         Re-scan only when you add, remove or rename model files.
                       </p>
                     </div>
+                    {scanStatus?.status === "scanning" && (
+                      <button
+                        type="button"
+                        onClick={() => stopScan.mutate()}
+                        disabled={stopScan.isPending}
+                        className="inline-flex items-center gap-2 rounded-full bg-rose-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:bg-rose-800"
+                      >
+                        <X className="h-4 w-4" />
+                        Stop All
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">1. Discovery Scan</p>
+                      <p className="mt-1 text-xs text-stone-400">Fast listing of new or renamed files</p>
+                    </div>
                     <button
                       type="button"
                       onClick={() => startScan.mutate()}
                       disabled={startScan.isPending || scanStatus?.status === "scanning"}
-                      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
                     >
-                      <ScanSearch className="h-4 w-4" />
-                      {scanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
+                      <ScanSearch className="h-3.5 w-3.5" />
+                      Scan Directories
                     </button>
+                  </div>
+                  <div className="mt-4 flex items-center justify-between text-xs text-stone-300">
+                    <span>{scanStatus?.status === "scanning" && scanStatus.total > 0 ? `${scanStatus.done} of ${scanStatus.total}` : "Idle"}</span>
+                    <span>{scanProgress}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-white transition-all" style={{ width: `${scanProgress}%` }} />
                   </div>
                 </div>
 
-                {[
-                  {
-                    title: "Directory scan",
-                    progress: scanProgress,
-                    label:
-                      scanStatus?.status === "scanning"
-                        ? `${scanStatus.done} of ${scanStatus.total || "?"}`
-                        : "Idle",
-                  },
-                  {
-                    title: "Hashing",
-                    progress: hashingProgress,
-                    label: scanStatus?.hashing_progress.total
-                      ? `${scanStatus.hashing_progress.done} of ${scanStatus.hashing_progress.total}`
-                      : "No pending hashes",
-                  },
-                  {
-                    title: "CivitAI sync",
-                    progress: civitaiProgress,
-                    label: scanStatus?.civitai_progress.total
-                      ? `${scanStatus.civitai_progress.done} of ${scanStatus.civitai_progress.total}`
-                      : "No pending sync",
-                  },
-                ].map((item) => (
-                  <div key={item.title} className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex items-center justify-between text-sm text-stone-300">
-                      <span className="font-semibold text-white">{item.title}</span>
-                      <span>{item.label}</span>
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold text-white">2. Hashing & Sync</p>
+                      <p className="mt-1 text-xs text-stone-400">Computes hashes and fetches CivitAI metadata (intensivo)</p>
                     </div>
-                    <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full rounded-full bg-white transition-all" style={{ width: `${item.progress}%` }} />
+                    <button
+                      type="button"
+                      onClick={() => startWorker.mutate()}
+                      disabled={startWorker.isPending || scanStatus?.status === "scanning"}
+                      className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RefreshCcw className="h-3.5 w-3.5" />
+                      Run Hashing & Sync
+                    </button>
+                  </div>
+                  
+                  <div className="mt-5 space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between text-xs text-stone-300">
+                        <span>Hashing</span>
+                        <span>{scanStatus?.hashing_progress.total ? `${scanStatus.hashing_progress.done} of ${scanStatus.hashing_progress.total}` : "Idle"}</span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-emerald-400/60 transition-all" style={{ width: `${hashingProgress}%` }} />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-xs text-stone-300">
+                        <span>CivitAI sync</span>
+                        <span>{scanStatus?.civitai_progress.total ? `${scanStatus.civitai_progress.done} of ${scanStatus.civitai_progress.total}` : "Idle"}</span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-blue-400/60 transition-all" style={{ width: `${civitaiProgress}%` }} />
+                      </div>
                     </div>
                   </div>
-                ))}
+                </div>
               </div>
             ) : null}
 
             {modalView === "scan-results" ? (
-              <div className="space-y-5 p-6">
+              <div className="space-y-6 p-6">
                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <p className="text-sm font-semibold text-white">Generated image scan</p>
-                      <p className="mt-1 text-sm text-stone-400">
+                      <p className="mt-1 text-xs text-stone-400">
                         Scan configured folders for generated PNG images with ComfyUI metadata.
                       </p>
                     </div>
-                      <button
-                        type="button"
-                        onClick={() => startResultsScan.mutate()}
-                        disabled={startResultsScan.isPending || saveSettings.isPending || resultsScanStatus?.status === "scanning"}
-                        className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-                      >
-                        <Images className="h-4 w-4" />
-                      {resultsScanStatus?.status === "scanning" ? "Scanning..." : "Run scan"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startResultsScan.mutate()}
+                          disabled={startResultsScan.isPending || saveSettings.isPending || resultsScanStatus?.status === "scanning"}
+                          className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                        >
+                          <Images className="h-3.5 w-3.5" />
+                          Run scan
+                      </button>
+                      {resultsScanStatus?.status === "scanning" && (
+                        <button
+                          type="button"
+                          onClick={() => stopResultsScan.mutate()}
+                          disabled={stopResultsScan.isPending}
+                          className="inline-flex items-center gap-2 rounded-full bg-rose-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:bg-rose-800"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          Stop
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex items-center justify-between text-sm text-stone-300">
-                    <span className="font-semibold text-white">Results scan progress</span>
-                    <span>{resultsScanStatus?.status === "scanning" ? `${resultsScanStatus.done} of ${resultsScanStatus.total || "?"}` : "Idle"}</span>
-                  </div>
-                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/10">
-                    <div className="h-full rounded-full bg-emerald-300 transition-all" style={{ width: `${resultsScanProgress}%` }} />
-                  </div>
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-400">
-                    <span>{resultsScanStatus ? `${resultsScanStatus.linked} linked` : "0 linked"}</span>
-                    <span>{resultsScanStatus ? `${resultsScanStatus.unresolved_models} unresolved` : "0 unresolved"}</span>
-                    {resultsScanStatus?.current_file ? <span className="truncate">{resultsScanStatus.current_file}</span> : null}
+                  <div className="mt-5 space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between text-xs text-stone-300">
+                        <span>Scan Progress</span>
+                        <span>{resultsScanStatus?.status === "scanning" ? `${resultsScanStatus.done} of ${resultsScanStatus.total || "?"}` : "Idle"}</span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-emerald-300 transition-all" style={{ width: `${resultsScanProgress}%` }} />
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3 text-[10px] uppercase tracking-wider text-stone-500">
+                      <span>{resultsScanStatus ? `${resultsScanStatus.linked} linked` : "0 linked"}</span>
+                      <span>{resultsScanStatus ? `${resultsScanStatus.unresolved_models} unresolved` : "0 unresolved"}</span>
+                      {resultsScanStatus?.current_file ? <span className="truncate normal-case tracking-normal">{resultsScanStatus.current_file}</span> : null}
+                    </div>
                   </div>
                 </div>
 
@@ -998,109 +1078,114 @@ export default function App() {
                   </a>
                 </div>
               </form>
-            ) : null}
-
-            {modalView === "model" && selectedModel ? (
+            ) : null}            {modalView === "model" && selectedModel ? (
               <div className="space-y-6 p-6">
+                <div className="flex flex-col gap-2">
+                  <h2 className="line-clamp-2 text-2xl font-bold text-white lg:text-3xl">
+                    {getModelName(selectedModel)}
+                  </h2>
+                  <p className="font-mono text-xs text-stone-500">{selectedModel.filename}</p>
+                </div>
+                
                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex flex-wrap gap-2">
-                      {selectedModel.civitai_data?.stats?.rating ? (
-                        <span className="inline-flex rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-100">
-                          {selectedModel.civitai_data.stats.rating.toFixed(1)} rating
-                        </span>
-                      ) : null}
+                      {[
+                        { id: "gallery", label: "Gallery", icon: GalleryHorizontal },
+                        { id: "examples", label: "Examples", icon: Images },
+                        { id: "overview", label: "Overview", icon: Grip },
+                      ].map((tab) => {
+                        const Icon = tab.icon;
+                        const isActive = modelModalTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setModelModalTab(tab.id as ModelModalTab)}
+                            className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                              isActive
+                                ? "bg-white text-stone-950 shadow-lg shadow-white/5"
+                                : "border border-white/10 bg-white/5 text-stone-400 hover:bg-white/10 hover:text-stone-200"
+                            }`}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {tab.label}
+                          </button>
+                        );
+                      })}
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => setShowUploadForm((current) => !current)}
-                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/10"
+                        onClick={() => syncModel.mutate()}
+                        disabled={syncModel.isPending}
+                        className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Force re-hash and re-sync this specific model with CivitAI"
                       >
-                        {showUploadForm ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                        {showUploadForm ? "Hide uploader" : "Add images"}
+                        <RefreshCcw className={`h-4 w-4 ${syncModel.isPending ? "animate-spin" : ""}`} />
+                        {syncModel.isPending ? "Syncing..." : "Sync with CivitAI"}
                       </button>
                     </div>
                   </div>
-
-                  {showUploadForm ? (
-                    <form onSubmit={handleUploadSubmit} className="mt-5 space-y-4 rounded-[1.2rem] border border-white/10 bg-black/20 p-4">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                        <ImagePlus className="h-4 w-4" />
-                        Add images to your gallery
-                      </div>
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
-                        className="block w-full text-sm text-stone-300 file:mr-4 file:rounded-full file:border-0 file:bg-white file:px-4 file:py-2 file:text-sm file:font-semibold file:text-stone-950"
-                      />
-                      <input
-                        type="text"
-                        value={uploadCaption}
-                        onChange={(event) => setUploadCaption(event.target.value)}
-                        placeholder="Optional label for your reference"
-                        className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-white/25"
-                      />
-                      {imageUpload.isError ? (
-                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                          {imageUpload.error.message}
-                        </p>
-                      ) : null}
-                      {imageUpload.isSuccess ? (
-                        <p className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-                          Image uploaded successfully.
-                        </p>
-                      ) : null}
-                      {primaryImageMutation.isError ? (
-                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                          {primaryImageMutation.error.message}
-                        </p>
-                      ) : null}
-                      {deleteImageMutation.isError ? (
-                        <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                          {deleteImageMutation.error.message}
-                        </p>
-                      ) : null}
-                      <button
-                        type="submit"
-                        disabled={!uploadFile || imageUpload.isPending}
-                        className="inline-flex items-center justify-center rounded-full bg-white px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-                      >
-                        {imageUpload.isPending ? "Uploading..." : "Upload image"}
-                      </button>
-                    </form>
-                  ) : null}
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { id: "gallery", label: "Gallery", icon: GalleryHorizontal },
-                    { id: "overview", label: "Overview", icon: Grip },
-                    { id: "civitai", label: "CivitAI", icon: Sparkles },
-                  ].map((tab) => {
-                    const Icon = tab.icon;
-                    const isActive = modelModalTab === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setModelModalTab(tab.id as ModelModalTab)}
-                        className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
-                          isActive
-                            ? "bg-white text-stone-950"
-                            : "border border-white/10 bg-white/5 text-stone-300 hover:bg-white/10"
-                        }`}
-                      >
-                        <Icon className="h-4 w-4" />
-                        {tab.label}
-                      </button>
-                    );
-                  })}
                 </div>
 
                 {modelModalTab === "gallery" ? (
-                  <div className="space-y-5">
+                  <div 
+                    className="relative space-y-5"
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setModelGalleryDropActive(true);
+                    }}
+                    onDragLeave={() => setModelGalleryDropActive(false)}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      setModelGalleryDropActive(false);
+                      const files = Array.from(e.dataTransfer.files);
+                      if (files.length > 0) {
+                        let uploaded = 0;
+                        for (const file of files) {
+                          if (file.type.startsWith("image/")) {
+                            await imageUpload.mutateAsync({ file });
+                            uploaded++;
+                          }
+                        }
+                        if (uploaded > 0) {
+                          setModelGalleryUploadNotice(
+                            uploaded === 1 ? "Image uploaded to Gallery." : `${uploaded} images uploaded to Gallery.`
+                          );
+                          setTimeout(() => setModelGalleryUploadNotice(null), 3000);
+                        }
+                      }
+                    }}
+                  >
+                    {modelGalleryDropActive && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[1.8rem] border border-dashed border-emerald-300/50 bg-emerald-300/10 backdrop-blur-sm">
+                          <div className="rounded-[1.4rem] border border-emerald-300/30 bg-black/55 px-6 py-5 text-center">
+                            <p className="text-sm font-semibold text-emerald-100">Drop images to upload to Gallery</p>
+                            <p className="mt-1 text-xs text-emerald-200/80">Support for multiple images.</p>
+                          </div>
+                        </div>
+                    )}
+
+                    {modelGalleryUploadNotice && (
+                        <div className="mb-2 rounded-[1.3rem] border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                          {modelGalleryUploadNotice}
+                        </div>
+                    )}
+
+                    {imageUpload.isPending && !modelGalleryUploadNotice && (
+                        <div className="mb-2 rounded-[1.3rem] border border-white/10 bg-white/5 px-4 py-3 text-sm text-stone-300 flex items-center gap-2">
+                           <RefreshCcw className="h-4 w-4 animate-spin" />
+                           Uploading images...
+                        </div>
+                    )}
+
+                    {imageUpload.isError && (
+                      <div className="mb-2 rounded-[1.3rem] border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                        {imageUpload.error.message}
+                      </div>
+                    )}
+
                     <div className="overflow-hidden rounded-[1.6rem] border border-white/10 bg-white/[0.03] p-4">
                       {(modelDetailQuery.data?.user_images ?? []).length > 0 ? (
                         <div className="columns-1 gap-4 md:columns-2 xl:columns-3">
@@ -1151,123 +1236,166 @@ export default function App() {
                   </div>
                 ) : null}
 
-                {modelModalTab === "overview" ? (
-                  <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-                    <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">Base model</dt>
-                        <dd className="text-right text-stone-200">{getBaseModel(selectedModel) ?? "-"}</dd>
-                      </div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">Local path</dt>
-                        <dd className="max-w-[65%] break-all text-right text-stone-200">{selectedModel.directory}</dd>
-                      </div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">File size</dt>
-                        <dd className="text-right text-stone-200">{formatFileSize(selectedModel.file_size)}</dd>
-                      </div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">Hash mode</dt>
-                        <dd className="text-right text-stone-200">{selectedModel.blake3 ? "blake3" : selectedModel.sha256 ? "sha256" : "-"}</dd>
-                      </div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">Created</dt>
-                        <dd className="text-right text-stone-200">{selectedModel.created_at ?? "-"}</dd>
-                      </div>
-                    </dl>
+                {modelModalTab === "examples" ? (
+                  <div className="space-y-6">
+                    {(() => {
+                      const civitaiImages = selectedModel.civitai_data?.images || 
+                                           selectedModel.civitai_data?.modelVersions?.[0]?.images || [];
+                      
+                      if (civitaiImages.length === 0) {
+                        return (
+                          <div className="flex min-h-[320px] items-center justify-center rounded-[1.6rem] border border-dashed border-white/10 bg-black/20 px-6 text-center text-sm text-stone-500">
+                            No example images found from CivitAI.
+                          </div>
+                        );
+                      }
 
-                    <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                      <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Quick notes</h4>
-                      <div className="mt-4 space-y-4 text-sm text-stone-300">
-                        <p>{selectedModel.note ?? "No personal notes yet for this model."}</p>
-                        <div className="flex flex-wrap gap-2">
-                          {(selectedModel.tags ?? []).length > 0 ? (
-                            selectedModel.tags!.map((tag) => (
-                              <span
-                                key={tag}
-                                className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-medium text-stone-200"
-                              >
-                                {tag}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-stone-500">No tags yet.</span>
-                          )}
+                      return (
+                        <div className="space-y-4">
+                          {civitaiImages.map((img) => (
+                            <div key={img.id} className="group overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] transition hover:bg-white/[0.05]">
+                              <div className="flex flex-col lg:flex-row">
+                                <div className="relative aspect-square w-full bg-black/20 lg:w-[320px]">
+                                  <img 
+                                    src={img.url} 
+                                    alt="Example" 
+                                    className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                                  />
+                                  {img.nsfw && img.nsfw !== "None" && (
+                                    <span className="absolute left-3 top-3 rounded-full bg-rose-500/80 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white backdrop-blur">
+                                      {img.nsfw}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex-1 p-5 lg:p-6">
+                                  {img.meta ? (
+                                    <div className="space-y-4">
+                                      {img.meta.prompt && (
+                                        <div>
+                                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">Prompt</p>
+                                          <div className="mt-1.5 overflow-hidden">
+                                            <p className="line-clamp-3 text-xs leading-relaxed text-stone-300 transition-all group-hover:line-clamp-none">
+                                              {img.meta.prompt}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-white/5 pt-4 sm:grid-cols-3 lg:grid-cols-4">
+                                        {img.meta.sampler && (
+                                          <div>
+                                            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-stone-600">Sampler</p>
+                                            <p className="mt-0.5 truncate text-xs text-stone-300" title={img.meta.sampler}>{img.meta.sampler}</p>
+                                          </div>
+                                        )}
+                                        {img.meta.cfgScale !== undefined && (
+                                          <div>
+                                            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-stone-600">CFG Scale</p>
+                                            <p className="mt-0.5 text-xs text-stone-300">{img.meta.cfgScale}</p>
+                                          </div>
+                                        )}
+                                        {img.meta.steps !== undefined && (
+                                          <div>
+                                            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-stone-600">Steps</p>
+                                            <p className="mt-0.5 text-xs text-stone-300">{img.meta.steps}</p>
+                                          </div>
+                                        )}
+                                        {img.meta.seed !== undefined && (
+                                          <div>
+                                            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-stone-600">Seed</p>
+                                            <p className="mt-0.5 text-xs text-stone-300">{img.meta.seed}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="flex h-full items-center justify-center">
+                                      <p className="text-xs text-stone-600">No metadata provided for this example.</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
                   </div>
                 ) : null}
 
-                {modelModalTab === "civitai" ? (
-                  <div className="space-y-5">
-                    <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">CivitAI ID</dt>
-                        <dd className="text-right text-stone-200">
-                          {selectedModel.civitai_model_id && selectedModel.civitai_model_id !== -1
-                            ? `${selectedModel.civitai_model_id}${selectedModel.civitai_version_id ? ` · v${selectedModel.civitai_version_id}` : ""}`
-                            : "No CivitAI match"}
-                        </dd>
-                      </div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-stone-500">Last sync</dt>
-                        <dd className="text-right text-stone-200">{selectedModel.last_civitai_sync ?? "-"}</dd>
-                      </div>
-                    </dl>
+                {modelModalTab === "overview" ? (
+                  <div className="space-y-6">
+                    <div className="grid gap-6 lg:grid-cols-[1fr_1.5fr]">
+                        <div className="space-y-6">
+                            <dl className="space-y-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-6 text-sm">
+                                <div className="flex items-start justify-between gap-4">
+                                    <dt className="text-stone-500 font-medium">Base model</dt>
+                                    <dd className="text-right text-stone-200">{getBaseModel(selectedModel) ?? "-"}</dd>
+                                </div>
+                                <div className="flex items-start justify-between gap-4">
+                                    <dt className="text-stone-500 font-medium">Local path</dt>
+                                    <dd className="max-w-[70%] break-all text-right text-stone-200 font-mono text-[11px] leading-relaxed">{selectedModel.directory}</dd>
+                                </div>
+                                <div className="flex items-start justify-between gap-4">
+                                    <dt className="text-stone-500 font-medium">File size</dt>
+                                    <dd className="text-right text-stone-200">{formatFileSize(selectedModel.file_size)}</dd>
+                                </div>
+                                <div className="flex items-start justify-between gap-4">
+                                    <dt className="text-stone-500 font-medium">Hash mode</dt>
+                                    <dd className="text-right text-stone-200 font-mono uppercase text-[10px]">{selectedModel.blake3 ? "blake3" : selectedModel.sha256 ? "sha256" : "-"}</dd>
+                                </div>
+                                {selectedModel.civitai_model_id && selectedModel.civitai_model_id !== -1 && (
+                                    <div className="flex flex-col border-t border-white/5 pt-3 mt-3 gap-2">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <dt className="text-stone-500 font-medium">CivitAI ID</dt>
+                                            <dd className="text-right text-stone-200 font-mono text-[10px]">{selectedModel.civitai_model_id} · v{selectedModel.civitai_version_id}</dd>
+                                        </div>
+                                        {selectedModel.last_civitai_sync && (
+                                            <div className="flex items-start justify-between gap-4">
+                                                <dt className="text-stone-500 font-medium text-[11px]">Last Sync</dt>
+                                                <dd className="text-right text-stone-400 font-mono text-[10px]">{selectedModel.last_civitai_sync}</dd>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </dl>
 
-                    {(selectedModel.civitai_data?.stats || selectedModel.civitai_data?.modelVersions?.[0]?.trainedWords?.length) ? (
-                      <div className="space-y-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                        {selectedModel.civitai_data?.stats ? (
-                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Rating</p>
-                              <p className="mt-2 text-lg font-semibold text-white">
-                                {selectedModel.civitai_data.stats.rating?.toFixed(2) ?? "-"}
-                              </p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Downloads</p>
-                              <p className="mt-2 text-lg font-semibold text-white">
-                                {selectedModel.civitai_data.stats.downloadCount?.toLocaleString() ?? "-"}
-                              </p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Favorites</p>
-                              <p className="mt-2 text-lg font-semibold text-white">
-                                {selectedModel.civitai_data.stats.favoriteCount?.toLocaleString() ?? "-"}
-                              </p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                              <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Ratings</p>
-                              <p className="mt-2 text-lg font-semibold text-white">
-                                {selectedModel.civitai_data.stats.ratingCount?.toLocaleString() ?? "-"}
-                              </p>
-                            </div>
-                          </div>
-                        ) : null}
+                            {/* Trigger Words Section */}
+                            {(selectedModel.civitai_data?.trainedWords || []).length > 0 && (
+                                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-6">
+                                    <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">Trigger Words</h4>
+                                    <p className="mt-1 text-[10px] text-stone-600 mb-4">Click to copy word</p>
+                                    <div className="flex flex-wrap gap-2">
+                                        {selectedModel.civitai_data!.trainedWords!.map((word: string) => (
+                                            <button
+                                                key={word}
+                                                type="button"
+                                                onClick={() => {
+                                                    navigator.clipboard.writeText(word);
+                                                }}
+                                                className="rounded-xl border border-white/10 bg-black/25 px-3 py-1.5 text-xs font-medium text-stone-200 transition-all hover:border-emerald-500/30 hover:bg-emerald-500/10 hover:text-emerald-200 active:scale-95"
+                                                title="Copy to clipboard"
+                                            >
+                                                {word}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
 
-                        {selectedModel.civitai_data?.modelVersions?.[0]?.trainedWords?.length ? (
-                          <div className="space-y-2">
-                            <p className="text-xs uppercase tracking-[0.18em] text-stone-500">Trigger words</p>
-                            <div className="flex flex-wrap gap-2">
-                              {selectedModel.civitai_data.modelVersions[0].trainedWords!.slice(0, 16).map((word) => (
-                                <span
-                                  key={word}
-                                  className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-medium text-stone-200"
-                                >
-                                  {word}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm text-stone-400">
-                        No additional CivitAI metadata available for this model.
-                      </div>
-                    )}
+                        {/* About / Page Content Section */}
+                        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-6">
+                            <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500 mb-5">About this model</h4>
+                            {selectedModel.civitai_data?.description ? (
+                                <div 
+                                    className="civitai-description prose prose-invert prose-sm max-w-none text-stone-300 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar"
+                                    dangerouslySetInnerHTML={{ __html: selectedModel.civitai_data.description }}
+                                />
+                            ) : (
+                                <p className="text-sm text-stone-500 italic">No description available from CivitAI.</p>
+                            )}
+                        </div>
+                    </div>
                   </div>
                 ) : null}
               </div>
