@@ -24,7 +24,7 @@ from .settings import load_settings
 
 LOGGER = logging.getLogger(__name__)
 
-VALID_RESULTS_EXTENSIONS = {".png"}
+VALID_RESULTS_EXTENSIONS = {".png", ".webp", ".avif", ".avifs"}
 
 
 @dataclass
@@ -177,8 +177,6 @@ async def _run_results_scan_job() -> None:
                 format_name=metadata.get("format"),
                 has_comfy_metadata=bool(metadata.get("has_comfy_metadata")),
                 prompt_text=metadata.get("prompt_text"),
-                workflow_json=metadata.get("workflow_json"),
-                metadata_json=metadata.get("metadata_json"),
             )
 
             scan_root = next((root for root in scan_roots if root in file_path.parents or root == file_path.parent), file_path.parent)

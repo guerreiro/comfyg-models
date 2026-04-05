@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,8 +32,9 @@ from .database import (
     upsert_image_by_sha256,
     upsert_image_source,
 )
+
 from .civitai import verify_api_key
-from .image_metadata import extract_comfy_metadata
+from .image_metadata import extract_comfy_metadata, read_workflow_from_file
 from .image_indexing import build_filter_values, build_image_tags
 from .results_scanner import get_results_scan_status, start_results_scan_job, stop_results_scan_job
 from .scanner import get_scan_status, start_scan_job, stop_scan_job
@@ -155,6 +157,7 @@ def register_routes(routes: Any) -> None:
     routes.get(r"/comfyg-models/api/models/{model_id:.+}")(get_model_detail_handler)
     routes.get(r"/comfyg-models/api/images/{image_id:\d+}")(get_image_detail_handler)
     routes.get(r"/comfyg-models/api/images/{image_id:\d+}/content")(get_image_content_handler)
+    routes.get(r"/comfyg-models/api/images/{image_id:\d+}/workflow")(get_image_workflow_handler)
     routes.post(r"/comfyg-models/api/images/{image_id:\d+}/reveal")(post_image_reveal_handler)
     routes.get("/comfyg-models/api/images/filters")(get_image_filters_handler)
     routes.get("/comfyg-models/api/images/tags")(get_all_tags_handler)
@@ -566,20 +569,53 @@ async def get_image_content_handler(request: Any) -> Any:
         path = source.get("path")
         if source.get("is_present") and isinstance(path, str) and Path(path).exists():
             file_path = Path(path)
+            suffix = file_path.suffix.lower()
             content_type = "image/png"
-            if file_path.suffix.lower() in {".jpg", ".jpeg"}:
+            if suffix in {".jpg", ".jpeg"}:
                 content_type = "image/jpeg"
-            elif file_path.suffix.lower() == ".webp":
+            elif suffix == ".webp":
                 content_type = "image/webp"
-            
+            elif suffix in {".avif", ".avifs"}:
+                content_type = "image/avif"
+
             with file_path.open("rb") as f:
                 body = f.read()
-            
+
             response = web.Response(body=body, content_type=content_type)
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
             return response
+
+    return _json_response(error_payload("No present source found for image", "IMAGE_SOURCE_MISSING"), status=404)
+
+
+async def get_image_workflow_handler(request: Any) -> Any:
+    """Handle GET /comfyg-models/api/images/{image_id}/workflow.
+
+    Reads the workflow JSON directly from the source file on-demand so we
+    don't have to store it in the database.
+    """
+    if not HAS_AIOHTTP or web is None:
+        return _json_response(error_payload("aiohttp is unavailable", "AIOHTTP_UNAVAILABLE"), status=500)
+    image_id = int(request.match_info["image_id"])
+    try:
+        image = await get_image_detail(image_id)
+    except Exception:
+        LOGGER.exception("Failed to load image for workflow %s", image_id)
+        return _json_response(error_payload("Failed to load image", "IMAGE_CONTENT_ERROR"), status=500)
+    if image is None:
+        return _json_response(error_payload("Image not found", "IMAGE_NOT_FOUND"), status=404)
+
+    for source in image.get("sources", []):
+        path_value = source.get("path")
+        if source.get("is_present") and isinstance(path_value, str):
+            file_path = Path(path_value)
+            if file_path.exists():
+                workflow = await asyncio.to_thread(read_workflow_from_file, file_path)
+                if workflow is not None:
+                    return _json_response({"workflow": workflow})
+                return _json_response({"workflow": None, "reason": "no_comfy_metadata"})
 
     return _json_response(error_payload("No present source found for image", "IMAGE_SOURCE_MISSING"), status=404)
 
@@ -641,7 +677,7 @@ async def _ingest_image_from_bytes(
     negative_prompt: str | None,
 ) -> dict[str, Any]:
     suffix = Path(original_filename).suffix.lower()
-    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".avif", ".avifs"}:
         raise ApiError("Unsupported image format", "INVALID_IMAGE_FORMAT", 400)
 
     size = len(file_bytes)
@@ -665,8 +701,6 @@ async def _ingest_image_from_bytes(
             format_name=metadata.get("format"),
             has_comfy_metadata=bool(metadata.get("has_comfy_metadata")),
             prompt_text=metadata.get("prompt_text") or prompt,
-            workflow_json=metadata.get("workflow_json"),
-            metadata_json=metadata.get("metadata_json"),
         )
 
         existing_image = await get_image_detail(image_id)
@@ -860,6 +894,8 @@ async def get_user_image_handler(request: Any) -> Any:
         content_type = "image/jpeg"
     elif file_path.suffix.lower() == ".webp":
         content_type = "image/webp"
+    elif file_path.suffix.lower() in {".avif", ".avifs"}:
+        content_type = "image/avif"
     
     with file_path.open("rb") as f:
         body = f.read()

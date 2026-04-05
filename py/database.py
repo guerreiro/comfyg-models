@@ -94,8 +94,6 @@ IMAGES_SCHEMA_STATEMENTS = """CREATE TABLE IF NOT EXISTS images (
     format TEXT,
     has_comfy_metadata INTEGER NOT NULL DEFAULT 0,
     prompt_text TEXT,
-    workflow_json TEXT,
-    metadata_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -434,20 +432,16 @@ def _parse_model_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_image_payload(row: dict[str, Any]) -> dict[str, Any]:
     parsed = dict(row)
-    for key in ("workflow_json", "metadata_json", "models", "tags", "sources"):
+    for key in ("models", "tags", "sources"):
         value = parsed.get(key)
         if isinstance(value, str) and value:
             try:
                 parsed[key] = json.loads(value)
             except json.JSONDecodeError:
                 LOGGER.warning("Failed to decode JSON field %s for image payload", key)
-                parsed[key] = None
-        elif value is None and key in {"models", "tags", "sources"}:
+                parsed[key] = []
+        elif value is None:
             parsed[key] = []
-
-    for json_key in ("workflow_json", "metadata_json"):
-        if parsed.get(json_key) is not None:
-            parsed[json_key] = _sanitize_json_values(parsed[json_key])
 
     if parsed.get("id") is not None:
         parsed["preview_url"] = f"/comfyg-models/api/images/{parsed['id']}/content"
@@ -739,25 +733,19 @@ async def upsert_image_by_sha256(
     format_name: str | None = None,
     has_comfy_metadata: bool = False,
     prompt_text: str | None = None,
-    workflow_json: dict[str, Any] | list[Any] | None = None,
-    metadata_json: dict[str, Any] | list[Any] | None = None,
 ) -> int:
     """Create or update a canonical image entity and return its id."""
-    serialized_workflow = json.dumps(workflow_json, ensure_ascii=True) if workflow_json is not None else None
-    serialized_metadata = json.dumps(metadata_json, ensure_ascii=True) if metadata_json is not None else None
     query = """
     INSERT INTO images (
-        sha256, width, height, format, has_comfy_metadata, prompt_text, workflow_json, metadata_json, updated_at
+        sha256, width, height, format, has_comfy_metadata, prompt_text, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(sha256) DO UPDATE SET
         width = COALESCE(excluded.width, images.width),
         height = COALESCE(excluded.height, images.height),
         format = COALESCE(excluded.format, images.format),
         has_comfy_metadata = MAX(images.has_comfy_metadata, excluded.has_comfy_metadata),
         prompt_text = COALESCE(excluded.prompt_text, images.prompt_text),
-        workflow_json = COALESCE(excluded.workflow_json, images.workflow_json),
-        metadata_json = COALESCE(excluded.metadata_json, images.metadata_json),
         updated_at = CURRENT_TIMESTAMP
     """
     async with connection_context() as connection:
@@ -770,8 +758,6 @@ async def upsert_image_by_sha256(
                 format_name,
                 1 if has_comfy_metadata else 0,
                 prompt_text,
-                serialized_workflow,
-                serialized_metadata,
             ),
         )
         async with connection.execute("SELECT id FROM images WHERE sha256 = ?", (sha256,)) as cursor:
@@ -959,8 +945,6 @@ async def list_images_for_model(model_id: str, source_kind: str | None = None) -
         i.format,
         i.has_comfy_metadata,
         i.prompt_text,
-        i.workflow_json,
-        i.metadata_json,
         i.created_at,
         i.updated_at,
         mil.is_primary,
@@ -1024,8 +1008,6 @@ async def list_images(filters: dict[str, Any] | None = None) -> list[dict[str, A
         i.format,
         i.has_comfy_metadata,
         i.prompt_text,
-        i.workflow_json,
-        i.metadata_json,
         i.created_at,
         i.updated_at,
         COALESCE(
@@ -1093,8 +1075,6 @@ async def get_image_detail(image_id: int) -> dict[str, Any] | None:
         i.format,
         i.has_comfy_metadata,
         i.prompt_text,
-        i.workflow_json,
-        i.metadata_json,
         i.created_at,
         i.updated_at,
         COALESCE(

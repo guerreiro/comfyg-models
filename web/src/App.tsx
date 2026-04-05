@@ -1497,8 +1497,7 @@ export default function App() {
                       {showImageMetadata ? (
                         <div className="max-h-80 overflow-y-auto overflow-x-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
                           <pre className="whitespace-pre-wrap break-words text-xs leading-6 text-stone-300">
-                            {imageDetailQuery.data.prompt_text ??
-                              JSON.stringify(imageDetailQuery.data.metadata_json ?? {}, null, 2)}
+                            {imageDetailQuery.data.prompt_text ?? "(no prompt text available)"}
                           </pre>
                         </div>
                       ) : (

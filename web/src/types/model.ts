@@ -104,11 +104,11 @@ export interface GalleryImage {
   format: string | null;
   has_comfy_metadata: number;
   prompt_text: string | null;
-  workflow_json: unknown;
-  metadata_json: unknown;
   created_at: string;
   updated_at: string;
   preview_url: string;
+  /** On-demand: fetch workflow via GET /comfyg-models/api/images/{id}/workflow */
+  workflow_url?: string;
   is_primary?: number;
   sources: GalleryImageSource[];
   tags: GalleryImageTag[];
