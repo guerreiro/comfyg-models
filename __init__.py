@@ -14,7 +14,7 @@ from .py.settings import ensure_data_dir, get_data_dir
 
 LOGGER = logging.getLogger(__name__)
 
-WEB_DIRECTORY = "web/dist"
+WEB_DIRECTORY = "web-extension"
 NODE_CLASS_MAPPINGS: dict[str, Any] = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {}
 PLUGIN_ROOT = Path(__file__).resolve().parent
