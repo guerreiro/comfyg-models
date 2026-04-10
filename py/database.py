@@ -299,6 +299,25 @@ async def upsert_models(models: list[dict[str, Any]]) -> None:
     await executemany(query, rows)
 
 
+async def get_existing_models_index() -> dict[str, int]:
+    """Return {model_id: file_size} for incremental scan comparison."""
+    query = "SELECT id, file_size FROM models"
+    rows = await fetch_all(query)
+    return {row["id"]: int(row["file_size"] or 0) for row in rows}
+
+
+async def remove_models(model_ids: list[str]) -> None:
+    """Remove models that are no longer on disk."""
+    if not model_ids:
+        LOGGER.debug("No models to remove")
+        return
+    query = "DELETE FROM models WHERE id = ?"
+    async with connection_context() as connection:
+        await connection.executemany(query, [(mid,) for mid in model_ids])
+        await connection.commit()
+    LOGGER.info("Removed %s missing models", len(model_ids))
+
+
 async def list_models_missing_hashes() -> list[dict[str, Any]]:
     """Return models that still need hashing."""
     query = """

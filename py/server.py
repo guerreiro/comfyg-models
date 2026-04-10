@@ -204,10 +204,18 @@ async def put_settings_handler(request: Any) -> Any:
     return _json_response(result)
 
 
-async def post_scan_handler(_request: Any) -> Any:
-    """Handle POST /comfyg-models/api/scan."""
+async def post_scan_handler(request: Any) -> Any:
+    """Handle POST /comfyg-models/api/scan.
+    
+    Query params:
+        mode: "quick" (default) for incremental file scan only, "full" for scan + auto hash/sync.
+    """
+    mode = request.rel_url.query.get("mode", "quick")
+    if mode not in ("quick", "full"):
+        return _json_response(error_payload("Invalid mode. Use 'quick' or 'full'", "INVALID_MODE"), status=400)
+    
     try:
-        started = await start_scan_job()
+        started = await start_scan_job(mode)
     except Exception:
         LOGGER.exception("Unexpected failure while starting a scan job")
         return _json_response(error_payload("Failed to start scan", "SCAN_START_ERROR"), status=500)
@@ -215,7 +223,7 @@ async def post_scan_handler(_request: Any) -> Any:
     if not started:
         return _json_response({"status": "already_running"})
 
-    return _json_response({"status": "started"})
+    return _json_response({"status": "started", "mode": mode})
 
 
 async def get_scan_status_handler(_request: Any) -> Any:
