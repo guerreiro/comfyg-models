@@ -318,8 +318,17 @@ async def remove_models(model_ids: list[str]) -> None:
     LOGGER.info("Removed %s missing models", len(model_ids))
 
 
-async def list_models_missing_hashes() -> list[dict[str, Any]]:
-    """Return models that still need hashing."""
+async def list_models_missing_hashes(types: list[str] | None = None) -> list[dict[str, Any]]:
+    """Return models that still need hashing, optionally filtered by type."""
+    if types:
+        placeholders = ", ".join("?" for _ in types)
+        query = f"""
+        SELECT id, filename, directory, type, file_size
+        FROM models
+        WHERE sha256 IS NULL AND type IN ({placeholders})
+        ORDER BY created_at ASC, filename ASC
+        """
+        return await fetch_all(query, types)
     query = """
     SELECT id, filename, directory, type, file_size
     FROM models
@@ -341,10 +350,10 @@ async def update_model_hashes(model_id: str, sha256: str | None, blake3: str | N
     await execute(query, (sha256, blake3, model_id))
 
 
-async def list_models_pending_civitai_sync() -> list[dict[str, Any]]:
-    """Return models that can be looked up on CivitAI."""
-    query = """
-    SELECT id, filename, directory, sha256, blake3, civitai_model_id, last_civitai_sync
+async def list_models_pending_civitai_sync(types: list[str] | None = None) -> list[dict[str, Any]]:
+    """Return models that can be looked up on CivitAI, optionally filtered by type."""
+    base_query = """
+    SELECT id, filename, directory, type, sha256, blake3, civitai_model_id, last_civitai_sync
     FROM models
     WHERE (blake3 IS NOT NULL OR sha256 IS NOT NULL)
       AND (
@@ -357,8 +366,12 @@ async def list_models_pending_civitai_sync() -> list[dict[str, Any]]:
           )
         )
       )
-    ORDER BY created_at ASC, filename ASC
     """
+    if types:
+        placeholders = ", ".join("?" for _ in types)
+        query = f"{base_query} AND type IN ({placeholders}) ORDER BY created_at ASC, filename ASC"
+        return await fetch_all(query, types)
+    query = f"{base_query} ORDER BY created_at ASC, filename ASC"
     return await fetch_all(query)
 
 

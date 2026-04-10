@@ -55,11 +55,14 @@ async function startScan(): Promise<StartScanResponse> {
   return parseResponse<StartScanResponse>(response);
 }
 
-async function startWorker(): Promise<{ status: string }> {
-  const response = await fetch("/comfyg-models/api/worker/start", {
+async function startWorker(filterTypes?: string[]): Promise<{ status: string; filter_types?: string[] }> {
+  const url = filterTypes && filterTypes.length > 0
+    ? `/comfyg-models/api/worker/start?types=${filterTypes.join(",")}`
+    : "/comfyg-models/api/worker/start";
+  const response = await fetch(url, {
     method: "POST",
   });
-  return parseResponse<{ status: string }>(response);
+  return parseResponse<{ status: string; filter_types?: string[] }>(response);
 }
 
 export function useScanStatusQuery() {
@@ -88,7 +91,7 @@ export function useStartWorkerMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: startWorker,
+    mutationFn: (filterTypes?: string[]) => startWorker(filterTypes),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
     },

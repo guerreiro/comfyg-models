@@ -53,9 +53,17 @@ class WorkerStatus:
 
 WORKER_STATUS = WorkerStatus()
 _WORKER_TASK: asyncio.Task[None] | None = None
+_FILTER_TYPES: list[str] | None = None
 
-def wake_worker() -> None:
-    """Notify the worker that new models might be ready for hashing or syncing."""
+def wake_worker(filter_types: list[str] | None = None) -> None:
+    """Notify the worker that new models might be ready for hashing or syncing.
+    
+    Args:
+        filter_types: Optional list of model types to filter (e.g., ["checkpoint", "lora"]).
+                    If None, processes all types.
+    """
+    global _FILTER_TYPES
+    _FILTER_TYPES = filter_types
     global _WORKER_TASK
     if _WORKER_TASK is None or _WORKER_TASK.done():
         start_worker()
@@ -67,7 +75,7 @@ def get_worker_status() -> dict[str, Any]:
 
 async def worker_loop() -> None:
     """Continuously monitor for unhashed models or pending CivitAI syncs."""
-    LOGGER.info("Started background hashing worker")
+    LOGGER.info("Started background hashing worker (filter_types=%s)", _FILTER_TYPES)
     from pathlib import Path
     
     while True:
@@ -75,7 +83,7 @@ async def worker_loop() -> None:
             WORKER_STATUS.status = "working"
             
             # Step 1: Hashing
-            models_to_hash = await list_models_missing_hashes()
+            models_to_hash = await list_models_missing_hashes(_FILTER_TYPES)
             if models_to_hash:
                 WORKER_STATUS.hashing_total = len(models_to_hash)
                 WORKER_STATUS.hashing_done = 0
@@ -101,7 +109,7 @@ async def worker_loop() -> None:
                 WORKER_STATUS.current_hash_file = None
 
             # Step 2: CivitAI Sync
-            models_to_sync = await list_models_pending_civitai_sync()
+            models_to_sync = await list_models_pending_civitai_sync(_FILTER_TYPES)
             if models_to_sync:
                 WORKER_STATUS.civitai_total = len(models_to_sync)
                 WORKER_STATUS.civitai_done = 0

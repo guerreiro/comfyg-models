@@ -231,14 +231,24 @@ async def get_scan_status_handler(_request: Any) -> Any:
     return _json_response(get_scan_status())
 
 
-async def post_worker_start_handler(_request: Any) -> Any:
-    """Handle POST /comfyg-models/api/worker/start."""
+async def post_worker_start_handler(request: Any) -> Any:
+    """Handle POST /comfyg-models/api/worker/start.
+    
+    Query params:
+        types: Optional comma-separated list of model types to filter (e.g., "checkpoint,lora,vae").
+               If not provided, processes all types.
+    """
+    types_param = request.rel_url.query.get("types")
+    filter_types: list[str] | None = None
+    if types_param:
+        filter_types = [t.strip() for t in types_param.split(",") if t.strip()]
+    
     try:
-        wake_worker()
+        wake_worker(filter_types)
     except Exception:
         LOGGER.exception("Failed to wake worker")
         return _json_response(error_payload("Failed to start worker", "WORKER_START_ERROR"), status=500)
-    return _json_response({"status": "started"})
+    return _json_response({"status": "started", "filter_types": filter_types})
 
 
 async def post_model_sync_handler(request: Any) -> Any:

@@ -136,6 +136,7 @@ export default function App() {
   const [newGeneratedPath, setNewGeneratedPath] = useState("");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [hashFilter, setHashFilter] = useState<string>("all");
   const [sort, setSort] = useState<ModelFilters["sort"]>("name");
   const [sortDir, setSortDir] = useState<ModelFilters["sort_dir"]>("asc");
   const [modelModalTab, setModelModalTab] = useState<ModelModalTab>("gallery");
@@ -271,182 +272,142 @@ export default function App() {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(236,122,49,0.10),_transparent_24%),radial-gradient(circle_at_85%_10%,_rgba(56,189,149,0.08),_transparent_22%),linear-gradient(180deg,_#09090b_0%,_#111215_42%,_#17181d_100%)] text-stone-100">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-4 px-4 py-4 lg:px-6">
-        <header className="flex flex-col gap-3 rounded-[1.5rem] border border-white/10 bg-white/5 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl flex flex-wrap items-center gap-4">
-                Comfyg Models
+        <header className="flex flex-col gap-2 rounded-[1.5rem] border border-white/10 bg-white/5 px-3 py-2 shadow-[0_24px_80px_rgba(0,0,0,0.28)] backdrop-blur">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl flex items-center gap-2">
+                ComfyUI
+                <span className="text-stone-500">Models</span>
                 {(scanStatus?.status === "scanning" || resultsScanStatus?.status === "scanning") && (
-                  <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 animate-pulse tracking-widest uppercase">
-                    <RefreshCcw className="w-3 h-3 animate-spin" />
-                    Scanning
+                  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 animate-pulse tracking-widest uppercase">
+                    <RefreshCcw className="w-2.5 h-2.5 animate-spin" />
+                    Scan
                   </span>
                 )}
               </h1>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { id: "library", label: "Library", icon: Sparkles },
-                  { id: "results", label: "Results", icon: Images },
-                ].map((item) => {
-                  const Icon = item.icon;
-                  const isActive = primaryView === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setPrimaryView(item.id as PrimaryView)}
-                      className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
-                        isActive
-                          ? "bg-white text-stone-950"
-                          : "border border-white/10 bg-white/8 text-stone-200 hover:bg-white/12"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (primaryView === "library") {
-                      modelsQuery.refetch();
-                    } else {
-                      imagesQuery.refetch();
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
-                  title="Refresh list"
-                >
-                  <RefreshCcw className="h-4 w-4" />
-                </button>
-              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              {[
+                { id: "library", label: "Library", icon: Sparkles },
+                { id: "results", label: "Results", icon: Images },
+              ].map((item) => {
+                const Icon = item.icon;
+                const isActive = primaryView === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setPrimaryView(item.id as PrimaryView)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      isActive
+                        ? "bg-white text-stone-950"
+                        : "border border-white/10 bg-white/5 text-stone-400 hover:bg-white/10"
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
               <button
                 type="button"
                 onClick={() => setModalView("scan-models")}
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
+                title="Scan Models"
               >
-                <ScanSearch className="h-4 w-4" />
-                Scan Models
+                <ScanSearch className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setModalView("scan-results")}
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
+                title="Scan Results"
               >
-                <Images className="h-4 w-4" />
-                Scan Results
+                <Images className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setModalView("settings")}
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:bg-white/12"
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
+                title="Settings"
               >
-                <Settings2 className="h-4 w-4" />
-                Settings
+                <Settings2 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (primaryView === "library") {
+                    modelsQuery.refetch();
+                  } else {
+                    imagesQuery.refetch();
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
+                title="Refresh"
+              >
+                <RefreshCcw className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
 
-          {primaryView === "library" ? (
-            <section className="grid gap-3 lg:grid-cols-[1.5fr_1fr]">
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Search className="h-4 w-4 text-stone-500" />
+{primaryView === "library" ? (
+            <section className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 flex-1 min-w-[200px]">
+                <Search className="h-3.5 w-3.5 text-stone-500" />
                 <input
                   type="text"
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search by filename, CivitAI title or base model"
+                  placeholder="Search..."
                   className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
                 />
               </label>
-
-
-
-              <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-                <Sparkles className="h-4 w-4 text-stone-500" />
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="appearance-none rounded-full border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none cursor-pointer hover:bg-white/10"
+              >
+                <option value="all" className="bg-stone-950">All types</option>
+                {availableTypes.map((type) => (
+                  <option key={type} value={type} className="bg-stone-950">{type}</option>
+                ))}
+              </select>
+              <label className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2">
+                <Sparkles className="h-3.5 w-3.5 text-stone-500" />
                 <select
                   value={sort}
                   onChange={(event) => setSort(event.target.value as NonNullable<ModelFilters["sort"]>)}
-                  className="w-full appearance-none bg-transparent text-sm text-white outline-none"
+                  className="appearance-none bg-transparent text-xs text-white outline-none cursor-pointer"
                 >
-                  <option value="name" className="bg-stone-950">
-                    Sort by name
-                  </option>
-                  <option value="size" className="bg-stone-950">
-                    Sort by size
-                  </option>
-                  <option value="date" className="bg-stone-950">
-                    Sort by date
-                  </option>
-                  <option value="civitai_rating" className="bg-stone-950">
-                    Sort by CivitAI rating
-                  </option>
+                  <option value="name" className="bg-stone-950">name</option>
+                  <option value="size" className="bg-stone-950">size</option>
+                  <option value="date" className="bg-stone-950">date</option>
+                  <option value="civitai_rating" className="bg-stone-950">rating</option>
                 </select>
                 <button
                   type="button"
                   onClick={() => setSortDir((current) => (current === "asc" ? "desc" : "asc"))}
-                  className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-stone-300 transition hover:bg-white/10"
+                  className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-semibold text-stone-300 transition hover:bg-white/10"
                 >
-                  {sortDir === "asc" ? "ASC" : "DESC"}
+                  {sortDir === "asc" ? "↑" : "↓"}
                 </button>
               </label>
             </section>
           ) : null}
 
           {primaryView === "results" ? (
-            <label className="flex items-center gap-3 rounded-[1.4rem] border border-white/10 bg-black/20 px-4 py-3">
-              <Search className="h-4 w-4 text-stone-500" />
+            <label className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2">
+              <Search className="h-3.5 w-3.5 text-stone-500" />
               <input
                 type="text"
                 value={resultsSearch}
                 onChange={(event) => setResultsSearch(event.target.value)}
-                placeholder="Search by prompt, filename or tags..."
+                placeholder="Search..."
                 className="w-full bg-transparent text-sm text-white outline-none placeholder:text-stone-500"
               />
             </label>
           ) : null}
         </header>
-
-        {primaryView === "library" ? (
-          <div className="flex flex-col gap-4">
-            <div className="space-y-3">
-              <div className="flex flex-col gap-2">
-                <span className="px-1 text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">Model Types</span>
-                <section className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                  <button
-                    type="button"
-                    onClick={() => setTypeFilter("all")}
-                    className={`flex-none rounded-full px-4 py-1.5 text-xs font-semibold transition-all duration-300 ${
-                      typeFilter === "all"
-                        ? "bg-white text-stone-950 shadow-[0_0_20px_rgba(255,255,255,0.15)]"
-                        : "border border-white/10 bg-white/5 text-stone-400 hover:border-white/20 hover:bg-white/10 hover:text-stone-200"
-                    }`}
-                  >
-                    All types
-                  </button>
-                  {availableTypes.map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => setTypeFilter(type)}
-                      className={`flex-none rounded-full px-4 py-1.5 text-xs font-semibold transition-all duration-300 ${
-                        typeFilter === type
-                          ? "bg-emerald-400 text-stone-950 shadow-[0_0_20px_rgba(52,211,153,0.15)]"
-                          : "border border-white/10 bg-white/5 text-stone-400 hover:border-white/20 hover:bg-white/10 hover:text-stone-200"
-                      }`}
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </section>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
         {primaryView === "library" ? (
           <>
@@ -809,20 +770,32 @@ export default function App() {
                 </div>
 
                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-white">2. Hashing & Sync</p>
                       <p className="mt-1 text-xs text-stone-400">Computes hashes and fetches CivitAI metadata (intensivo)</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => startWorker.mutate()}
-                      disabled={startWorker.isPending || scanStatus?.status === "scanning"}
-                      className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <RefreshCcw className="h-3.5 w-3.5" />
-                      Run Hashing & Sync
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={hashFilter}
+                        onChange={(e) => setHashFilter(e.target.value)}
+                        className="appearance-none rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-white outline-none cursor-pointer hover:bg-white/10"
+                      >
+                        <option value="all" className="bg-stone-950">All types</option>
+                        {availableTypes.map((type) => (
+                          <option key={type} value={type} className="bg-stone-950">{type}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => startWorker.mutate(hashFilter === "all" ? undefined : [hashFilter])}
+                        disabled={startWorker.isPending || scanStatus?.status === "scanning"}
+                        className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RefreshCcw className="h-3.5 w-3.5" />
+                        Run Hashing & Sync
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="mt-5 space-y-4">
