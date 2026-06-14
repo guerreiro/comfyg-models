@@ -30,6 +30,7 @@ export interface Model {
   note?: string | null;
   tags?: string[];
   rating?: number | null;
+  civitai_previews?: { url: string; local_filename: string | null }[];
 }
 
 export interface ModelUserImage {
@@ -66,7 +67,7 @@ export interface ModelDetail extends Model {
   user_images: ModelUserImage[];
   gallery_images?: GalleryImage[];
   prompts: ModelPrompt[];
-  civitai_previews: ModelPreview[];
+  civitai_previews: { url: string; local_filename: string | null }[];
 }
 
 export interface GalleryImageSource {

@@ -20,6 +20,9 @@ from .database import (
     get_all_image_tags,
     get_image_filter_buckets,
     get_model_detail,
+    get_primary_civitai_preview,
+    set_civitai_preview,
+    clear_civitai_preview,
     link_image_to_model,
     list_images,
     count_images,
@@ -168,6 +171,9 @@ def register_routes(routes: Any) -> None:
     routes.delete(r"/comfyg-models/api/models/{model_id:.+}/images/{image_id:\d+}")(delete_model_image_handler)
     routes.get("/comfyg-models/api/user-images/{filename}")(get_user_image_handler)
     routes.get("/comfyg-models/api/export-data")(get_export_data_handler)
+    routes.post(r"/comfyg-models/api/models/{model_id:.+}/thumbnail-cache")(post_model_thumbnail_cache_handler)
+    routes.get("/comfyg-models/api/thumbnail-cache")(get_model_thumbnail_cache_handler_qp)
+    routes.delete("/comfyg-models/api/thumbnail-cache")(delete_model_thumbnail_cache_handler_qp)
     LOGGER.info("Registered settings API routes")
 
 
@@ -209,13 +215,19 @@ async def post_scan_handler(request: Any) -> Any:
     
     Query params:
         mode: "quick" (default) for incremental file scan only, "full" for scan + auto hash/sync.
+        types: Optional comma-separated list of model types to filter (e.g., "checkpoint,lora").
     """
     mode = request.rel_url.query.get("mode", "quick")
     if mode not in ("quick", "full"):
         return _json_response(error_payload("Invalid mode. Use 'quick' or 'full'", "INVALID_MODE"), status=400)
+        
+    types_param = request.rel_url.query.get("types")
+    filter_types: list[str] | None = None
+    if types_param:
+        filter_types = [t.strip() for t in types_param.split(",") if t.strip()]
     
     try:
-        started = await start_scan_job(mode)
+        started = await start_scan_job(mode, filter_types)
     except Exception:
         LOGGER.exception("Unexpected failure while starting a scan job")
         return _json_response(error_payload("Failed to start scan", "SCAN_START_ERROR"), status=500)
@@ -223,7 +235,7 @@ async def post_scan_handler(request: Any) -> Any:
     if not started:
         return _json_response({"status": "already_running"})
 
-    return _json_response({"status": "started", "mode": mode})
+    return _json_response({"status": "started", "mode": mode, "filter_types": filter_types})
 
 
 async def get_scan_status_handler(_request: Any) -> Any:
@@ -237,18 +249,25 @@ async def post_worker_start_handler(request: Any) -> Any:
     Query params:
         types: Optional comma-separated list of model types to filter (e.g., "checkpoint,lora,vae").
                If not provided, processes all types.
+        sync_mode: "new" (default), "full", or "filename".
     """
     types_param = request.rel_url.query.get("types")
     filter_types: list[str] | None = None
     if types_param:
         filter_types = [t.strip() for t in types_param.split(",") if t.strip()]
+        
+    sync_mode = request.rel_url.query.get("sync_mode", "new").lower()
+    
+    # Backwards compatibility with the old new_only flag
+    if request.rel_url.query.get("new_only", "false").lower() == "true":
+        sync_mode = "new"
     
     try:
-        wake_worker(filter_types)
+        wake_worker(filter_types, sync_mode=sync_mode)
     except Exception:
         LOGGER.exception("Failed to wake worker")
         return _json_response(error_payload("Failed to start worker", "WORKER_START_ERROR"), status=500)
-    return _json_response({"status": "started", "filter_types": filter_types})
+    return _json_response({"status": "started", "filter_types": filter_types, "sync_mode": sync_mode})
 
 
 async def post_model_sync_handler(request: Any) -> Any:
@@ -987,3 +1006,102 @@ async def post_stop_results_scan_handler(_request: Any) -> Any:
     """Handle POST /comfyg-models/api/results/scan/stop."""
     stopped = await stop_results_scan_job()
     return _json_response({"stopped": stopped})
+
+
+async def post_model_thumbnail_cache_handler(request: Any) -> Any:
+    """Handle POST /comfyg-models/api/models/{model_id}/thumbnail-cache.
+    
+    Downloads a CivitAI image URL to the local thumbnail cache and sets it as
+    the single cached thumbnail for this model, replacing any previous one.
+
+    Body JSON: { "url": "https://..." }
+    """
+    model_id = request.match_info["model_id"]
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_response(error_payload("Invalid JSON body", "INVALID_JSON"), status=400)
+
+    url = payload.get("url", "").strip()
+    if not url:
+        return _json_response(error_payload("Missing 'url' field", "MISSING_URL"), status=400)
+
+    model = await get_model_detail(model_id)
+    if model is None:
+        return _json_response(error_payload("Model not found", "NOT_FOUND"), status=404)
+
+    try:
+        from .thumbnail_cache import download_thumbnail, delete_thumbnail_file
+        # Download first — if it fails we won't touch the DB
+        local_path = await asyncio.to_thread(download_thumbnail, url)
+        local_filename = local_path.name
+
+        # Replace DB row and get back old filenames to clean up
+        old_filenames = await set_civitai_preview(model_id, url, local_filename)
+
+        # Delete old cached files from disk (not the new one if URL happened to match)
+        for old_fn in old_filenames:
+            if old_fn != local_filename:
+                delete_thumbnail_file(old_fn)
+
+    except ValueError as exc:
+        LOGGER.warning("Thumbnail download rejected: %s", exc)
+        return _json_response(error_payload(str(exc), "INVALID_IMAGE"), status=400)
+    except Exception as exc:
+        LOGGER.exception("Thumbnail download failed for model %s url %s", model_id, url)
+        return _json_response(error_payload(f"Download failed: {exc}", "DOWNLOAD_ERROR"), status=502)
+
+    return _json_response({"status": "cached", "local_filename": local_filename})
+
+
+async def get_model_thumbnail_cache_handler_qp(request: Any) -> Any:
+    """Handle GET /comfyg-models/api/thumbnail-cache?model_id=...
+    
+    Serves the locally cached primary thumbnail for a model.
+    Uses query param instead of path param to avoid URL-encoding issues with model IDs containing slashes.
+    """
+    model_id = request.rel_url.query.get("model_id", "")
+    LOGGER.info("Thumbnail cache GET for model_id=%s", model_id)
+
+    preview = await get_primary_civitai_preview(model_id)
+    LOGGER.info("Thumbnail cache preview result: %s", preview)
+    if preview is None or not preview.get("local_filename"):
+        return _json_response(error_payload("No cached thumbnail", "NOT_CACHED"), status=404)
+
+    from .thumbnail_cache import get_thumbnail_dir, get_thumbnail_mime
+    thumbnail_path = get_thumbnail_dir() / preview["local_filename"]
+    if not thumbnail_path.exists():
+        return _json_response(error_payload("Cached file missing", "CACHE_MISS"), status=404)
+
+    mime = get_thumbnail_mime(thumbnail_path)
+    data = thumbnail_path.read_bytes()
+
+    if not HAS_AIOHTTP or web is None:
+        return data
+
+    return web.Response(body=data, content_type=mime, headers={
+        "Cache-Control": "public, max-age=86400",
+    })
+
+
+async def delete_model_thumbnail_cache_handler_qp(request: Any) -> Any:
+    """Handle DELETE /comfyg-models/api/thumbnail-cache?model_id=...
+
+    Removes the locally cached thumbnail for a model and cleans up the file from disk.
+    Uses query param instead of path param to avoid URL-encoding issues with model IDs containing slashes.
+    """
+    model_id = request.rel_url.query.get("model_id", "")
+
+    model = await get_model_detail(model_id)
+    if model is None:
+        return _json_response(error_payload("Model not found", "NOT_FOUND"), status=404)
+
+    old_filenames = await clear_civitai_preview(model_id)
+
+    from .thumbnail_cache import delete_thumbnail_file
+    for old_fn in old_filenames:
+        delete_thumbnail_file(old_fn)
+
+    return _json_response({"status": "cleared"})
+

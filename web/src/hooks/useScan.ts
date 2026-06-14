@@ -48,21 +48,34 @@ async function stopScan(): Promise<{ stopped: boolean }> {
   return parseResponse<{ stopped: boolean }>(response);
 }
 
-async function startScan(): Promise<StartScanResponse> {
-  const response = await fetch("/comfyg-models/api/scan", {
+async function startScan(filterTypes?: string[]): Promise<StartScanResponse> {
+  const params = new URLSearchParams();
+  if (filterTypes && filterTypes.length > 0) {
+    params.set("types", filterTypes.join(","));
+  }
+  const queryString = params.toString();
+  const url = queryString ? `/comfyg-models/api/scan?${queryString}` : "/comfyg-models/api/scan";
+  
+  const response = await fetch(url, {
     method: "POST",
   });
   return parseResponse<StartScanResponse>(response);
 }
 
-async function startWorker(filterTypes?: string[]): Promise<{ status: string; filter_types?: string[] }> {
-  const url = filterTypes && filterTypes.length > 0
-    ? `/comfyg-models/api/worker/start?types=${filterTypes.join(",")}`
-    : "/comfyg-models/api/worker/start";
+async function startWorker(filterTypes?: string[], syncMode: "new" | "full" | "filename" = "new"): Promise<{ status: string; filter_types?: string[], sync_mode?: string }> {
+  const params = new URLSearchParams();
+  if (filterTypes && filterTypes.length > 0) {
+    params.set("types", filterTypes.join(","));
+  }
+  params.set("sync_mode", syncMode);
+  
+  const queryString = params.toString();
+  const url = queryString ? `/comfyg-models/api/worker/start?${queryString}` : "/comfyg-models/api/worker/start";
+  
   const response = await fetch(url, {
     method: "POST",
   });
-  return parseResponse<{ status: string; filter_types?: string[] }>(response);
+  return parseResponse<{ status: string; filter_types?: string[], sync_mode?: string }>(response);
 }
 
 export function useScanStatusQuery() {
@@ -80,7 +93,7 @@ export function useStartScanMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: startScan,
+    mutationFn: (filterTypes?: string[]) => startScan(filterTypes),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
     },
@@ -91,7 +104,7 @@ export function useStartWorkerMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (filterTypes?: string[]) => startWorker(filterTypes),
+    mutationFn: ({ filterTypes, syncMode }: { filterTypes?: string[], syncMode?: "new" | "full" | "filename" } = {}) => startWorker(filterTypes, syncMode),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.scanStatus });
     },

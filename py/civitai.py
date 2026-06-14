@@ -162,3 +162,27 @@ async def lookup_by_hash(hash_value: str, algorithm: str, api_key: str | None = 
         LOGGER.warning("CivitAI hash lookup failed with status %s", exc.status)
         raise
     return payload
+
+
+async def lookup_by_filename(filename: str, api_key: str | None = None) -> dict[str, Any] | None:
+    """Look up a model version by searching for its filename."""
+    LOGGER.debug("Looking up CivitAI model by filename: %s", filename)
+    try:
+        # We use the models endpoint with a query
+        payload = await _request_json(f"/models", params={"query": filename}, api_key=api_key)
+    except CivitaiHttpError as exc:
+        LOGGER.warning("CivitAI filename lookup failed with status %s", exc.status)
+        raise
+
+    # The payload is a list of models in payload['items']
+    items = payload.get("items", [])
+    for model in items:
+        # Search inside modelVersions to find a file with an exact matching name
+        for version in model.get("modelVersions", []):
+            for file_info in version.get("files", []):
+                if file_info.get("name", "").lower() == filename.lower():
+                    return version
+
+    # If no exact file match is found, but we got results, we might want to return the first version of the first model as a fallback,
+    # but the user requested exact filename so we should probably just return None if it doesn't match exactly to avoid false positives.
+    return None

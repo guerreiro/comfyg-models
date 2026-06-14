@@ -34,6 +34,7 @@ LOGGER = logging.getLogger(__name__)
 
 MODEL_TYPES: dict[str, str] = {
     "checkpoints": "checkpoint",
+    "diffusion_models": "checkpoint",
     "loras": "lora",
     "vae": "vae",
     "controlnet": "controlnet",
@@ -100,12 +101,13 @@ def _resolve_folder_paths() -> Any | None:
         return None
 
 
-def scan_all_models(incremental: bool = True, existing_index: dict[str, int] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+def scan_all_models(incremental: bool = True, existing_index: dict[str, int] | None = None, filter_types: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Scan configured model directories and return discovered files.
     
     Args:
         incremental: If True, skip files already in DB with matching file_size.
         existing_index: Pre-fetched {id: file_size} dict for comparison. If None, fetched automatically.
+        filter_types: Optional list of model types to scan (e.g. ["checkpoint", "lora"]).
     
     Returns:
         Tuple of (models list, list of removed model IDs that are no longer on disk).
@@ -122,6 +124,8 @@ def scan_all_models(incremental: bool = True, existing_index: dict[str, int] | N
     seen_ids: set[str] = set()
 
     for comfy_type, model_type in MODEL_TYPES.items():
+        if filter_types and model_type not in filter_types:
+            continue
         try:
             directories = folder_paths.get_folder_paths(comfy_type)
         except Exception:
@@ -174,11 +178,12 @@ def scan_all_models(incremental: bool = True, existing_index: dict[str, int] | N
     return models, removed_ids
 
 
-async def start_scan_job(mode: str = "quick") -> bool:
+async def start_scan_job(mode: str = "quick", filter_types: list[str] | None = None) -> bool:
     """Start a scan job if one is not already running.
     
     Args:
         mode: "quick" (default) for incremental file scan only, "full" for scan + auto hash/sync.
+        filter_types: Optional list of model types to scan.
     """
     global _SCAN_TASK
 
@@ -199,16 +204,16 @@ async def start_scan_job(mode: str = "quick") -> bool:
     SCAN_STATUS.current_civitai_model = None
 
     loop = asyncio.get_running_loop()
-    _SCAN_TASK = loop.create_task(_run_scan_job(mode))
-    LOGGER.info("Started background model scan job (mode=%s)", mode)
+    _SCAN_TASK = loop.create_task(_run_scan_job(mode, filter_types))
+    LOGGER.info("Started background model scan job (mode=%s, filter_types=%s)", mode, filter_types)
     return True
 
 
-async def _run_scan_job(mode: str) -> None:
+async def _run_scan_job(mode: str, filter_types: list[str] | None = None) -> None:
     """Run the model scan in the background and persist results progressively."""
     try:
-        existing_index = await get_existing_models_index()
-        models, removed_ids = await asyncio.to_thread(scan_all_models, True, existing_index)
+        existing_index = await get_existing_models_index(filter_types)
+        models, removed_ids = await asyncio.to_thread(scan_all_models, True, existing_index, filter_types)
         
         SCAN_STATUS.total = len(models) + len(removed_ids)
         LOGGER.info("Background scan discovered %s new/changed models, %s removed", len(models), len(removed_ids))

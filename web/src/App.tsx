@@ -1,4 +1,5 @@
 import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronUp,
@@ -57,11 +58,22 @@ function isImageSafe(image: CivitaiModelImage): boolean {
   return flag === "" || flag === "none";
 }
 
-function getModelPreview(model: Model, showNsfwPreviews: boolean): { kind: "user" | "civitai"; url: string } | null {
+function getModelPreview(model: Model, showNsfwPreviews: boolean): { kind: "user" | "civitai" | "cached"; url: string } | null {
   if (model.primary_user_image) {
     return {
       kind: "user",
       url: `/comfyg-models/api/user-images/${model.primary_user_image}`,
+    };
+  }
+
+  // Prefer locally cached thumbnail over hitting civitai.com directly
+  const cachedPreview = model.civitai_previews?.find(
+    (p) => p.local_filename
+  );
+  if (cachedPreview) {
+    return {
+      kind: "cached",
+      url: `/comfyg-models/api/thumbnail-cache?model_id=${encodeURIComponent(model.id)}`,
     };
   }
 
@@ -115,6 +127,7 @@ function addUniquePath(paths: string[], value: string): string[] {
 }
 
 export default function App() {
+  const queryClient = useQueryClient();
   const settingsQuery = useSettingsQuery();
   const saveSettings = useSaveSettingsMutation();
   const scanStatusQuery = useScanStatusQuery();
@@ -137,8 +150,10 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [hashFilter, setHashFilter] = useState<string>("all");
+  const [discoveryFilter, setDiscoveryFilter] = useState<string>("all");
   const [sort, setSort] = useState<ModelFilters["sort"]>("name");
   const [sortDir, setSortDir] = useState<ModelFilters["sort_dir"]>("asc");
+  const [syncMode, setSyncMode] = useState<"full" | "new" | "filename">("new");
   const [modelModalTab, setModelModalTab] = useState<ModelModalTab>("gallery");
   const [modelGalleryDropActive, setModelGalleryDropActive] = useState(false);
   const [modelGalleryUploadNotice, setModelGalleryUploadNotice] = useState<string | null>(null);
@@ -288,43 +303,64 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-1.5">
-              {[
-                { id: "library", label: "Library", icon: Sparkles },
-                { id: "results", label: "Results", icon: Images },
-              ].map((item) => {
-                const Icon = item.icon;
-                const isActive = primaryView === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setPrimaryView(item.id as PrimaryView)}
-                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                      isActive
-                        ? "bg-white text-stone-950"
-                        : "border border-white/10 bg-white/5 text-stone-400 hover:bg-white/10"
-                    }`}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => setModalView("scan-models")}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
-                title="Scan Models"
-              >
-                <ScanSearch className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalView("scan-results")}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10"
-                title="Scan Results"
-              >
-                <Images className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex items-center rounded-full border border-white/10 bg-black/20 p-0.5">
+                {[
+                  { id: "library", label: "Models", icon: Sparkles },
+                  { id: "results", label: "Images", icon: Images },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isActive = primaryView === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setPrimaryView(item.id as PrimaryView)}
+                      className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                        isActive
+                          ? "bg-white text-stone-950 shadow-sm"
+                          : "text-stone-400 hover:text-stone-200"
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mx-2 h-4 w-px bg-white/10" />
+
+              <div className="relative group">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-stone-400 transition hover:bg-white/10 group-hover:bg-white/10 group-hover:text-stone-200"
+                >
+                  <ScanSearch className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Scans</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                <div className="absolute right-0 top-full pt-2 hidden group-hover:block z-50">
+                  <div className="flex w-48 flex-col gap-1 rounded-xl border border-white/10 bg-[#17181d] p-1.5 shadow-[0_10px_40px_rgba(0,0,0,0.5)]">
+                    <button
+                      type="button"
+                      onClick={() => setModalView("scan-models")}
+                      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-semibold text-stone-300 transition hover:bg-white/10 hover:text-white"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Scan Models
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalView("scan-results")}
+                      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-semibold text-stone-300 transition hover:bg-white/10 hover:text-white"
+                    >
+                      <Images className="h-3.5 w-3.5" />
+                      Scan Images
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={() => setModalView("settings")}
@@ -332,6 +368,7 @@ export default function App() {
                 title="Settings"
               >
                 <Settings2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Settings</span>
               </button>
               <button
                 type="button"
@@ -640,7 +677,15 @@ export default function App() {
       </div>
 
       {modalView !== "none" ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-10 backdrop-blur-sm">
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-10 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setModalView("none");
+              setImagePendingDelete(null);
+            }
+          }}
+        >
           <div className="w-full max-w-5xl rounded-[2rem] border border-white/10 bg-[#101114] shadow-[0_30px_100px_rgba(0,0,0,0.45)]">
             <div className="flex items-center justify-between border-b border-white/10 px-6 py-5">
               {modalView === "model" && selectedModel ? (
@@ -745,20 +790,32 @@ export default function App() {
                 </div>
 
                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-white">1. Discovery Scan</p>
                       <p className="mt-1 text-xs text-stone-400">Fast listing of new or renamed files</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => startScan.mutate()}
-                      disabled={startScan.isPending || scanStatus?.status === "scanning"}
-                      className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
-                    >
-                      <ScanSearch className="h-3.5 w-3.5" />
-                      Scan Directories
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={discoveryFilter}
+                        onChange={(e) => setDiscoveryFilter(e.target.value)}
+                        className="appearance-none rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-white outline-none cursor-pointer hover:bg-white/10"
+                      >
+                        <option value="all" className="bg-stone-950">All types</option>
+                        {availableTypes.map((type) => (
+                          <option key={type} value={type} className="bg-stone-950">{type}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => startScan.mutate(discoveryFilter === "all" ? undefined : [discoveryFilter])}
+                        disabled={startScan.isPending || scanStatus?.status === "scanning"}
+                        className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-semibold text-stone-950 transition hover:bg-stone-200 disabled:cursor-not-allowed disabled:bg-stone-500"
+                      >
+                        <ScanSearch className="h-3.5 w-3.5" />
+                        Scan Directories
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-4 flex items-center justify-between text-xs text-stone-300">
                     <span>{scanStatus?.status === "scanning" && scanStatus.total > 0 ? `${scanStatus.done} of ${scanStatus.total}` : "Idle"}</span>
@@ -775,7 +832,7 @@ export default function App() {
                       <p className="text-sm font-semibold text-white">2. Hashing & Sync</p>
                       <p className="mt-1 text-xs text-stone-400">Computes hashes and fetches CivitAI metadata (intensivo)</p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={hashFilter}
                         onChange={(e) => setHashFilter(e.target.value)}
@@ -786,9 +843,18 @@ export default function App() {
                           <option key={type} value={type} className="bg-stone-950">{type}</option>
                         ))}
                       </select>
+                      <select
+                        value={syncMode}
+                        onChange={(e) => setSyncMode(e.target.value as "full" | "new" | "filename")}
+                        className="appearance-none rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-white outline-none cursor-pointer hover:bg-white/10"
+                      >
+                        <option value="new" className="bg-stone-950">New Models (Hash)</option>
+                        <option value="filename" className="bg-stone-950">Filename Search (Fast)</option>
+                        <option value="full" className="bg-stone-950">Full Sync (Hash)</option>
+                      </select>
                       <button
                         type="button"
-                        onClick={() => startWorker.mutate(hashFilter === "all" ? undefined : [hashFilter])}
+                        onClick={() => startWorker.mutate({ filterTypes: hashFilter === "all" ? undefined : [hashFilter], syncMode: syncMode })}
                         disabled={startWorker.isPending || scanStatus?.status === "scanning"}
                         className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -1223,9 +1289,17 @@ export default function App() {
                         );
                       }
 
+                      const cachedUrls = new Set(
+                        (modelDetailQuery.data?.civitai_previews ?? [])
+                          .filter((p) => p.local_filename)
+                          .map((p) => p.url)
+                      );
+
                       return (
                         <div className="space-y-4">
-                          {civitaiImages.map((img) => (
+                          {civitaiImages.map((img) => {
+                            const isCached = cachedUrls.has(img.url);
+                            return (
                             <div key={img.id} className="group overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] transition hover:bg-white/[0.05]">
                               <div className="flex flex-col lg:flex-row">
                                 <div className="relative aspect-square w-full bg-black/20 lg:w-[320px]">
@@ -1239,6 +1313,55 @@ export default function App() {
                                       {img.nsfw}
                                     </span>
                                   )}
+                                  {/* Set as Thumb / Remove Thumb buttons */}
+                                  <div className="absolute bottom-3 right-3 flex gap-2">
+                                    {isCached ? (
+                                      <>
+                                        <span className="rounded-full border border-emerald-500/30 bg-emerald-500/20 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300 backdrop-blur">
+                                          Thumb
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            try {
+                                              const resp = await fetch(
+                                                `/comfyg-models/api/thumbnail-cache?model_id=${encodeURIComponent(selectedModel.id)}`,
+                                                { method: "DELETE" }
+                                              );
+                                              if (!resp.ok) throw new Error(await resp.text());
+                                              await modelDetailQuery.refetch();
+                                              queryClient.invalidateQueries({ queryKey: ["models"] });
+                                            } catch (err) {
+                                              console.error("Failed to remove cached thumbnail", err);
+                                            }
+                                          }}
+                                          className="rounded-full border border-rose-500/30 bg-black/55 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-rose-200 backdrop-blur transition hover:bg-rose-500/20 cursor-pointer"
+                                        >
+                                          Remove
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            const resp = await fetch(
+                                              `/comfyg-models/api/models/${encodeURIComponent(selectedModel.id)}/thumbnail-cache`,
+                                              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: img.url }) }
+                                            );
+                                            if (!resp.ok) throw new Error(await resp.text());
+                                            await modelDetailQuery.refetch();
+                                            queryClient.invalidateQueries({ queryKey: ["models"] });
+                                          } catch (err) {
+                                            console.error("Failed to cache thumbnail", err);
+                                          }
+                                        }}
+                                        className="rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur transition hover:bg-white/20 cursor-pointer"
+                                      >
+                                        Set as Thumb
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                                 <div className="flex-1 p-5 lg:p-6">
                                   {img.meta ? (
@@ -1288,7 +1411,8 @@ export default function App() {
                                 </div>
                               </div>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       );
                     })()}

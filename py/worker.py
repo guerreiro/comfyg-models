@@ -54,16 +54,19 @@ class WorkerStatus:
 WORKER_STATUS = WorkerStatus()
 _WORKER_TASK: asyncio.Task[None] | None = None
 _FILTER_TYPES: list[str] | None = None
+_SYNC_MODE: str = "new"
 
-def wake_worker(filter_types: list[str] | None = None) -> None:
+def wake_worker(filter_types: list[str] | None = None, sync_mode: str = "new") -> None:
     """Notify the worker that new models might be ready for hashing or syncing.
     
     Args:
         filter_types: Optional list of model types to filter (e.g., ["checkpoint", "lora"]).
                     If None, processes all types.
+        sync_mode: "new", "full", or "filename".
     """
-    global _FILTER_TYPES
+    global _FILTER_TYPES, _SYNC_MODE
     _FILTER_TYPES = filter_types
+    _SYNC_MODE = sync_mode
     global _WORKER_TASK
     if _WORKER_TASK is None or _WORKER_TASK.done():
         start_worker()
@@ -75,7 +78,7 @@ def get_worker_status() -> dict[str, Any]:
 
 async def worker_loop() -> None:
     """Continuously monitor for unhashed models or pending CivitAI syncs."""
-    LOGGER.info("Started background hashing worker (filter_types=%s)", _FILTER_TYPES)
+    LOGGER.info("Started background model sync worker (filter_types=%s)", _FILTER_TYPES)
     from pathlib import Path
     
     while True:
@@ -83,7 +86,11 @@ async def worker_loop() -> None:
             WORKER_STATUS.status = "working"
             
             # Step 1: Hashing
-            models_to_hash = await list_models_missing_hashes(_FILTER_TYPES)
+            if _SYNC_MODE == "filename":
+                models_to_hash = []
+            else:
+                models_to_hash = await list_models_missing_hashes(_FILTER_TYPES)
+            
             if models_to_hash:
                 WORKER_STATUS.hashing_total = len(models_to_hash)
                 WORKER_STATUS.hashing_done = 0
@@ -109,7 +116,7 @@ async def worker_loop() -> None:
                 WORKER_STATUS.current_hash_file = None
 
             # Step 2: CivitAI Sync
-            models_to_sync = await list_models_pending_civitai_sync(_FILTER_TYPES)
+            models_to_sync = await list_models_pending_civitai_sync(_FILTER_TYPES, new_only=_SYNC_MODE != "full", allow_unhashed=_SYNC_MODE == "filename")
             if models_to_sync:
                 WORKER_STATUS.civitai_total = len(models_to_sync)
                 WORKER_STATUS.civitai_done = 0
@@ -117,30 +124,42 @@ async def worker_loop() -> None:
                 
                 for index, model in enumerate(models_to_sync, start=1):
                     WORKER_STATUS.current_civitai_model = str(model["filename"])
-                    algorithm, hash_value = preferred_hash(
-                        {
-                            "sha256": model.get("sha256"),
-                            "blake3": model.get("blake3"),
-                        }
-                    )
-                    payload = await lookup_by_hash(hash_value, algorithm, api_key=api_key)
-                    
-                    if payload is None:
-                        await update_model_civitai_match(
-                            model_id=str(model["id"]),
-                            civitai_model_id=-1,
-                            civitai_version_id=None,
-                            civitai_data=None,
-                        )
-                    else:
-                        version_id = payload.get("id")
-                        await update_model_civitai_match(
-                            model_id=str(model["id"]),
-                            civitai_model_id=int(payload.get("modelId", -1)),
-                            civitai_version_id=int(version_id) if version_id is not None else None,
-                            civitai_data=payload,
-                        )
+                    try:
+                        if _SYNC_MODE == "filename":
+                            from .civitai import lookup_by_filename
+                            payload = await lookup_by_filename(str(model["filename"]), api_key=api_key)
+                        else:
+                            from .civitai import lookup_by_hash
+                            algorithm, hash_value = preferred_hash(
+                                {
+                                    "sha256": model.get("sha256"),
+                                    "blake3": model.get("blake3"),
+                                }
+                            )
+                            payload = await lookup_by_hash(hash_value, algorithm, api_key=api_key)
+                        
+                        if payload is None:
+                            await update_model_civitai_match(
+                                model_id=str(model["id"]),
+                                civitai_model_id=-1,
+                                civitai_version_id=None,
+                                civitai_data=None,
+                            )
+                        else:
+                            version_id = payload.get("id")
+                            await update_model_civitai_match(
+                                model_id=str(model["id"]),
+                                civitai_model_id=int(payload.get("modelId", -1)),
+                                civitai_version_id=int(version_id) if version_id is not None else None,
+                                civitai_data=payload,
+                            )
+                    except Exception as e:
+                        LOGGER.warning("Failed to sync model %s: %s", model["filename"], e)
+                        await asyncio.sleep(2) # Back off slightly on error
+                        
                     WORKER_STATUS.civitai_done = index
+                    # Small delay between requests to avoid rapid rate limits
+                    await asyncio.sleep(0.1)
             else:
                 WORKER_STATUS.civitai_total = 0
                 WORKER_STATUS.civitai_done = 0
@@ -161,7 +180,7 @@ async def worker_loop() -> None:
             await asyncio.sleep(60) # Wait a minute before retrying
 
 def start_worker() -> None:
-    LOGGER.info("Registering background hashing worker onto event loop")
+    LOGGER.info("Registering background model sync worker onto event loop")
     try:
         loop = asyncio.get_running_loop()
         global _WORKER_TASK

@@ -299,10 +299,15 @@ async def upsert_models(models: list[dict[str, Any]]) -> None:
     await executemany(query, rows)
 
 
-async def get_existing_models_index() -> dict[str, int]:
-    """Return {model_id: file_size} for incremental scan comparison."""
-    query = "SELECT id, file_size FROM models"
-    rows = await fetch_all(query)
+async def get_existing_models_index(filter_types: list[str] | None = None) -> dict[str, int]:
+    """Return {model_id: file_size} for incremental scan comparison, optionally filtered by type."""
+    if filter_types:
+        placeholders = ", ".join("?" for _ in filter_types)
+        query = f"SELECT id, file_size FROM models WHERE type IN ({placeholders})"
+        rows = await fetch_all(query, filter_types)
+    else:
+        query = "SELECT id, file_size FROM models"
+        rows = await fetch_all(query)
     return {row["id"]: int(row["file_size"] or 0) for row in rows}
 
 
@@ -350,22 +355,25 @@ async def update_model_hashes(model_id: str, sha256: str | None, blake3: str | N
     await execute(query, (sha256, blake3, model_id))
 
 
-async def list_models_pending_civitai_sync(types: list[str] | None = None) -> list[dict[str, Any]]:
+async def list_models_pending_civitai_sync(types: list[str] | None = None, new_only: bool = False, allow_unhashed: bool = False) -> list[dict[str, Any]]:
     """Return models that can be looked up on CivitAI, optionally filtered by type."""
-    base_query = """
-    SELECT id, filename, directory, type, sha256, blake3, civitai_model_id, last_civitai_sync
-    FROM models
-    WHERE (blake3 IS NOT NULL OR sha256 IS NOT NULL)
-      AND (
-        civitai_model_id IS NULL
+    condition = "civitai_model_id IS NULL"
+    if not new_only:
+        condition += """
         OR (
           civitai_model_id = -1
           AND (
             last_civitai_sync IS NULL
             OR datetime(last_civitai_sync) <= datetime('now', '-24 hours')
           )
-        )
-      )
+        )"""
+
+    hash_condition = "" if allow_unhashed else "(blake3 IS NOT NULL OR sha256 IS NOT NULL) AND "
+
+    base_query = f"""
+    SELECT id, filename, directory, type, sha256, blake3, civitai_model_id, last_civitai_sync
+    FROM models
+    WHERE {hash_condition}({condition})
     """
     if types:
         placeholders = ", ".join("?" for _ in types)
@@ -392,6 +400,49 @@ async def update_model_civitai_match(
     """
     serialized = json.dumps(civitai_data, ensure_ascii=True) if civitai_data is not None else None
     await execute(query, (civitai_model_id, civitai_version_id, serialized, model_id))
+
+
+async def set_civitai_preview(model_id: str, url: str, local_filename: str) -> list[str]:
+    """Set the single cached thumbnail for a model.
+
+    Deletes any previous preview rows for this model and returns the old
+    local_filenames so the caller can remove them from disk.
+    """
+    # Fetch old filenames before deleting
+    old_rows = await fetch_all(
+        "SELECT local_filename FROM civitai_previews WHERE model_id = ? AND local_filename IS NOT NULL",
+        (model_id,),
+    )
+    old_filenames = [r["local_filename"] for r in old_rows if r["local_filename"]]
+
+    # Delete all existing preview rows for this model
+    await execute("DELETE FROM civitai_previews WHERE model_id = ?", (model_id,))
+
+    # Insert the new one
+    await execute(
+        "INSERT INTO civitai_previews (model_id, url, local_filename) VALUES (?, ?, ?)",
+        (model_id, url, local_filename),
+    )
+    return old_filenames
+
+
+async def get_primary_civitai_preview(model_id: str) -> dict[str, Any] | None:
+    """Return the primary cached CivitAI preview row for a model, or None."""
+    return await fetch_one(
+        "SELECT url, local_filename FROM civitai_previews WHERE model_id = ? AND local_filename IS NOT NULL LIMIT 1",
+        (model_id,),
+    )
+
+
+async def clear_civitai_preview(model_id: str) -> list[str]:
+    """Remove all cached preview rows for a model and return filenames to delete from disk."""
+    old_rows = await fetch_all(
+        "SELECT local_filename FROM civitai_previews WHERE model_id = ? AND local_filename IS NOT NULL",
+        (model_id,),
+    )
+    old_filenames = [r["local_filename"] for r in old_rows if r["local_filename"]]
+    await execute("DELETE FROM civitai_previews WHERE model_id = ?", (model_id,))
+    return old_filenames
 
 
 def _build_models_where_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -459,6 +510,8 @@ def _parse_model_row(row: dict[str, Any]) -> dict[str, Any]:
     tags = parsed.get("tags")
     parsed["civitai_data"] = json.loads(civitai_data) if isinstance(civitai_data, str) and civitai_data else None
     parsed["tags"] = json.loads(tags) if isinstance(tags, str) and tags else []
+    civitai_previews_raw = parsed.get("civitai_previews")
+    parsed["civitai_previews"] = json.loads(civitai_previews_raw) if isinstance(civitai_previews_raw, str) and civitai_previews_raw else []
     return parsed
 
 
@@ -613,7 +666,12 @@ async def list_models(filters: dict[str, Any] | None = None) -> list[dict[str, A
         ) AS primary_user_image,
         note.note AS note,
         rating.rating AS rating,
-        COALESCE(json_group_array(DISTINCT tags.tag) FILTER (WHERE tags.tag IS NOT NULL), '[]') AS tags
+        COALESCE(json_group_array(DISTINCT tags.tag) FILTER (WHERE tags.tag IS NOT NULL), '[]') AS tags,
+        (
+            SELECT COALESCE(json_group_array(json_object('url', cp.url, 'local_filename', cp.local_filename)), '[]')
+            FROM civitai_previews cp
+            WHERE cp.model_id = m.id AND cp.local_filename IS NOT NULL
+        ) AS civitai_previews
     FROM paginated_models pm
     JOIN models m ON m.id = pm.id
     LEFT JOIN model_notes note ON note.model_id = m.id
